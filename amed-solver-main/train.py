@@ -15,7 +15,8 @@ warnings.filterwarnings('ignore', 'Grad strides do not match bucket view strides
 @click.command()
 
 # General options.
-@click.option('--dataset_name',     help='Dataset name', metavar='STR',                                type=click.Choice(['cifar10', 'ffhq', 'afhqv2', 'imagenet64', 'lsun_bedroom', 'lsun_cat', 'imagenet256', 'ms_coco', 'lsun_bedroom_ldm']), required=True)
+@click.option('--dataset_name',     help='Dataset name', metavar='STR',                                type=click.Choice(['cifar10', 'ffhq', 'afhqv2', 'imagenet64', 'lsun_bedroom', 'lsun_cat', 'imagenet256', 'ms_coco', 'lsun_bedroom_ldm']), required=True,
+                default='cifar10')
 @click.option('--outdir',           help='Where to save the results', metavar='DIR',                   type=str, default='./exps')
 @click.option('--total_kimg',       help='Number of images (k) for training', metavar='INT',           type=int, default=10)
 @click.option('--prompt_path',      help='Path to MS-COCO_val2014_30k_captions.csv', metavar='DIR',    type=str)
