@@ -119,7 +119,7 @@ def create_model(dataset_name=None, guidance_type=None, guidance_rate=None, devi
 
 @click.command()
 # General options
-@click.option('--predictor_path',          help='Path to trained AMED instructor', metavar='DIR',                   type=str, required=True)
+@click.option('--predictor_path',          help='Path to trained AMED instructor', metavar='DIR',                   type=str, required=True, default='00001')
 @click.option('--model_path',              help='Network filepath', metavar='PATH|URL',                             type=str)
 @click.option('--batch', 'max_batch_size', help='Maximum batch size', metavar='INT',                                type=click.IntRange(min=1), default=64, show_default=True)
 @click.option('--seeds',                   help='Random seeds (e.g. 1,2,5-10)', metavar='LIST',                     type=parse_int_list, default='0-63', show_default=True)
