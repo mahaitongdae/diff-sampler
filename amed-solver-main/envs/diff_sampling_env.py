@@ -2,6 +2,7 @@ from solver_utils import *
 from solvers_amed import get_denoised, init_hook, get_amed_prediction
 from sample import StackedRandomGenerator
 import torch
+import os
 def amed_sampler(
         net,
         latents,
@@ -103,27 +104,25 @@ class DiffSamplingEnv(object):
 
     def __init__(self, device,
                  batch_seeds,
+                 dataset_name,
                  batch_size,
-                 img_channels,
-                 img_resolution,
-                 time_schedule,
                  num_steps,
-                 sigma_min,
-                 sigma_max,
                  schedule_type,
                  schedule_rho,
                  net,
-                 **solver_kwargs):
+                 outdir=None,
+                 **kwargs):
         # Pick latents and labels.
         self.device = device
         self.batch_size = batch_size
-        self.img_channels = img_channels
-        self.image_resolution = img_resolution
-        self.time_schedule = time_schedule
+
+        assert dataset_name in ['cifar10']
+        self.dataset_name = dataset_name
+        # if dataset_name == 'cifar10':
         self.net = net
         self.t_steps = get_schedule(num_steps,
-                                    sigma_min,
-                                    sigma_max,
+                                    self.net.sigma_min,
+                                    self.net.sigma_max,
                                     schedule_type=schedule_type,
                                     schedule_rho=schedule_rho,
                                     net=net,
@@ -136,21 +135,24 @@ class DiffSamplingEnv(object):
         
         in the paper.
         """
-        self.solver_kwargs = solver_kwargs
+        self.solver_kwargs = kwargs
         pass
 
     def reset(self, batch_seeds = None):
         self.rnd = StackedRandomGenerator(self.device, batch_seeds)
-        self.latents = self.rnd.randn([self.batch_size, self.img_channels, self.image_resolution, self.image_resolution],
+        self.latents = self.rnd.randn([self.batch_size,
+                                       self.net.img_channels,
+                                       self.net.img_resolution,
+                                       self.net.img_resolution],
                             device=self.device)
-        self.x = self.latents.clone()
+        self.x = self.latents.clone() * self.t_steps[0]
         class_labels = c = uc = None
         self.current_step = 0
         self.class_labels, self.c, self.uc = self.__reset_class_labels(batch_seeds)
         return self.latents, {}
 
 
-    def step(self, action):
+    def step(self, action, euler=False):
         r, scale_dir, scale_time = action
         t_cur = self.t_steps[self.current_step]
         t_next = self.t_steps[self.current_step + 1]
@@ -178,12 +180,40 @@ class DiffSamplingEnv(object):
                                 unconditional_condition=self.uc)
         d_mid = (x_next - denoised) / t_mid
         x_next = x_cur + scale_dir * (t_next - t_cur) * d_mid
+        self.x = x_next
 
         rewards = self.get_rewards()
         dones = self.get_dones()
+        self.current_step += 1
 
         return x_next, rewards, dones, {}
 
+    def step_euler(self):
+        t_cur = self.t_steps[self.current_step]
+        t_next = self.t_steps[self.current_step + 1]
+        x_cur = self.x
+        # unet_enc_out, hook = init_hook(self.net, self.class_labels)
+
+        # By default we set use_afs = False.
+        denoised = get_denoised(self.net, x_cur, t_cur,
+                                class_labels=self.class_labels,
+                                condition=self.c,
+                                unconditional_condition=self.uc)
+
+        d_cur = (x_cur - denoised) / t_cur
+        # hook.remove()
+        t_cur = t_cur.reshape(-1, 1, 1, 1)
+        t_next = t_next.reshape(-1, 1, 1, 1)
+
+        # t_mid = (t_next ** r) * (t_cur ** (1 - r))
+        x_next = x_cur + (t_next - t_cur) * d_cur
+        self.x = x_next
+
+        rewards = self.get_rewards()
+        dones = self.get_dones()
+        self.current_step += 1
+
+        return x_next, rewards, dones, {}
 
 
     def __reset_class_labels(self, batch_seeds):
@@ -191,7 +221,7 @@ class DiffSamplingEnv(object):
         class_labels = c = uc = None
         if self.net.label_dim:
             if solver_kwargs['model_source'] == 'adm':  # ADM models
-                class_labels = self.rndrnd.randint(self.net.label_dim, size=(self.batch_size,), device=self.device)
+                class_labels = self.rnd.randint(self.net.label_dim, size=(self.batch_size,), device=self.device)
             elif solver_kwargs['model_source'] == 'ldm' and solver_kwargs['dataset_name'] == 'ms_coco':
                 if solver_kwargs['prompt'] is None:
                     # prompts = sample_captions[batch_seeds[0]:batch_seeds[-1] + 1]
@@ -209,7 +239,64 @@ class DiffSamplingEnv(object):
         return class_labels, c, uc
 
     def get_rewards(self):
-        pass
+        return torch.zeros([self.batch_size], device=self.device)
 
     def get_dones(self):
-        pass
+        if self.current_step != len(self.t_steps) - 2:
+            return 0
+        else:
+            return 1
+
+    def save_images(self, img = None, grid=True, outdir=None):
+        from torchvision.utils import make_grid, save_image
+        images = self.x if img is None else img
+        if outdir is None:
+            if grid:
+                outdir = os.path.join(f"./samples/grids/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
+            else:
+                outdir = os.path.join(f"./samples/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
+        if grid:
+            images = torch.clamp(images / 2 + 0.5, 0, 1)
+            os.makedirs(outdir, exist_ok=True)
+            nrows = int(images.shape[0] ** 0.5)
+            image_grid = make_grid(images, nrows, padding=0)
+            save_image(image_grid, os.path.join(outdir, "grid.png"))
+
+    def sample_via_sample_fn(self,):
+        from solvers_amed import euler_sampler
+        img = euler_sampler(self.net, self.latents, self.class_labels, num_steps=1000, schedule_type='time_uniform',
+                        schedule_rho=1.0)
+        return img
+
+
+if __name__ == '__main__':
+
+    import dnnlib
+    from torch_utils.download_util import check_file_by_key
+    import pickle
+    import torch
+    model_path, classifier_path = check_file_by_key('cifar10', subsubdir='../src')
+    with dnnlib.util.open_url(model_path) as f:
+        net = pickle.load(f)['ema'].to(torch.device('cuda'))
+    net.sigma_min = 0.002
+    net.sigma_max = 80.0
+    env = DiffSamplingEnv(
+        device=torch.device('cuda'),
+        batch_seeds=1,
+        dataset_name='cifar10',
+        batch_size=8,
+        num_steps=1000,
+        schedule_type='time_uniform',
+        schedule_rho=1.0,
+        net=net,
+    )
+    env.reset(batch_seeds=torch.randint(low=0, high=1000, size=(8,)))
+    # img = env.sample_via_sample_fn()
+    done = False
+    for i in range(999):
+        x, _, done, _ = env.step_euler()
+    print(env.current_step, done)
+    env.save_images()
+
+
+
