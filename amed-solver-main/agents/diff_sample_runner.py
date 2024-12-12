@@ -109,7 +109,6 @@ class DiffSamplerOnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    print(i, self.env.current_step)
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
                     # move to the right device
