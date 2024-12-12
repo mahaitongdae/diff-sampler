@@ -1,7 +1,26 @@
 import inspect
+import torch
 
+def get_args(custom_params):
+    if custom_params.task == 'cifar10':
+        return EDMCIFAR10Config
 
-def get_args()
+def class_to_dict(obj) -> dict:
+    if not  hasattr(obj,"__dict__"):
+        return obj
+    result = {}
+    for key in dir(obj):
+        if key.startswith("_"):
+            continue
+        element = []
+        val = getattr(obj, key)
+        if isinstance(val, list):
+            for item in val:
+                element.append(class_to_dict(item))
+        else:
+            element = class_to_dict(val)
+        result[key] = element
+    return result
 
 class BaseConfig:
     def __init__(self) -> None:
@@ -31,6 +50,20 @@ class BaseConfig:
 class EDMCIFAR10Config(BaseConfig):
     seed = 1
     runner_class_name = 'DiffSampleOnPolicyRunner'
+    dataset_name = 'cifar10'
+    afs = True
+
+    class model:
+        guidance_type = None
+        guidance_rate = None
+
+    class env:
+        device = 'cuda'
+        batch_size = 64
+        num_steps = 100
+        schedule_type = 'time_uniform'
+        schedule_rho = 1.0
+
     class policy:
         init_noise_std = 1.0
         hidden_dim = 128,
@@ -86,3 +119,7 @@ class EDMCIFAR10Config(BaseConfig):
         load_run = -1  # -1 = last run
         checkpoint = -1  # -1 = last saved model
         resume_path = None  # updated from load_run and chkpt
+
+if __name__ == '__main__':
+    c = EDMCIFAR10Config()
+    print(c.policy.pop)

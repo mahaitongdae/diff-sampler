@@ -72,8 +72,8 @@ def load_ldm_model(config, ckpt, verbose=False):
 
 #----------------------------------------------------------------------------
 
-def create_model(dataset_name=None, guidance_type=None, guidance_rate=None, device=None):
-    model_path, classifier_path = check_file_by_key(dataset_name)
+def create_model(dataset_name=None, guidance_type=None, guidance_rate=None, device=None, subsubdir="src"):
+    model_path, classifier_path = check_file_by_key(dataset_name, subsubdir=subsubdir)
     dist.print0(f'Loading the pre-trained diffusion model from "{model_path}"...')
 
     if dataset_name in ['cifar10', 'ffhq', 'afhqv2', 'imagenet64']:         # models from EDM

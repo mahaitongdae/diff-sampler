@@ -1,12 +1,12 @@
 from rsl_rl.modules import ActorCritic
 import torch.nn as nn
 import torch
-from training.networks import AMEDActorCritic
+from training.networks import AMEDPredictorWithValue
 from torch.nn.functional import silu
 from torch.distributions import Normal
 
 
-class DiffSamplerPolicy(object):
+class DiffSamplerActorCritic(nn.Module):
 
     def __init__(
             self,
@@ -33,9 +33,10 @@ class DiffSamplerPolicy(object):
             predict_x0 = True,
             lower_order_final = True,
             init_noise_std = 1.0,
+            **kwargs
     ):
-
-        self.actor_critic = AMEDActorCritic(
+        super(DiffSamplerActorCritic, self).__init__()
+        self.shared_network = AMEDPredictorWithValue(
             hidden_dim=hidden_dim,
             output_dim=output_dim,
             bottleneck_input_dim=bottleneck_input_dim,
@@ -59,7 +60,9 @@ class DiffSamplerPolicy(object):
             predict_x0=predict_x0,
             lower_order_final=lower_order_final,
         )
-        self.std = nn.Parameter(init_noise_std * torch.ones(1))
+        self.std = nn.Parameter(init_noise_std * torch.ones(1, 2))
+        self.is_recurrent = False
+        self.sigmoid = torch.nn.Sigmoid()
 
     def reset(self, dones=None):
         pass
@@ -80,22 +83,50 @@ class DiffSamplerPolicy(object):
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, obs, t_cur, t_next):
-        mean, scale_dir, _ = self.actor_critic(obs, t_cur, t_next)
+        mean, _ = self.shared_network(obs, t_cur, t_next)
         self.distribution = Normal(mean, mean * 0.0 + self.std)
-    def act(self, obs, t_cur, t_next):
-        self.update_distribution(obs, t_cur, t_next)
-        action = self.distribution.sample()
-        return torch.sigmoid(action)
+    def act(self, observations):
+        x, t_cur, t_next = self.decompose_obs(observations)
+        mean, _ = self.shared_network(x, t_cur, t_next)
+        self.distribution = Normal(mean, mean * 0.0 + self.std)
+        actions = self.distribution.sample()
+        return self.post_processing_action(actions)
+
+    def post_processing_action(self, actions):
+        r = actions[:, [0]]
+        scale_dir = actions[:, [1]]
+        bounded_r = self.sigmoid(r)
+        bounded_scale_dir = self.sigmoid(scale_dir) / (1 / (2 * self.shared_network.scale_dir)) + (1 - self.shared_network.scale_dir)
+        return torch.cat([bounded_r, bounded_scale_dir], dim=1)
+
+    def reverse_transform_actions(self, actions):
+        bounded_scale_dir = actions[:, [1]]
+        bounded_r = actions[:, [0]]
+        bounded_scale_dir = (bounded_scale_dir - (1 - self.shared_network.scale_dir)) / (2 * self.shared_network.scale_dir)
+        squashed_actions = torch.cat([bounded_r, bounded_scale_dir], dim=1)
+        true_actions = -1. * torch.log(torch.reciprocal(squashed_actions) - 1.)
+        return true_actions
 
     def get_actions_log_prob(self, actions):
-        true_actions = -1. * torch.log(torch.reciprocal(actions) - 1.)
+        # raise NotImplementedError
+        # r = actions[:, [0]]
+        # scale_dir = actions[:, [1]]
+        true_actions = self.reverse_transform_actions(actions)
         return self.distribution.log_prob(true_actions).sum(dim=-1)
 
     def act_inference(self, observations):
-        actions_mean, _, _ = self.actor_critic(observations)
+        x, t_cur, t_next = self.decompose_obs(observations)
+        actions_mean, _, _ = self.shared_network(x, t_cur, t_next)
         return torch.sigmoid(actions_mean)
 
     def evaluate(self, critic_observations, **kwargs):
-        _, _, value = self.actor_critic(critic_observations)
+        x, t_cur, t_next = self.decompose_obs(critic_observations)
+        _, value = self.shared_network(x, t_cur, t_next)
         return value
+
+    def decompose_obs(self, obs):
+        unet_bottleneck = obs[:, :-2]
+        t_cur = obs[0, -2]
+        t_next = obs[0, -1]
+        return unet_bottleneck, t_cur, t_next
 

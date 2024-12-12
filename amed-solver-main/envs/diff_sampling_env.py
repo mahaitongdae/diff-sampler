@@ -103,19 +103,22 @@ def amed_sampler(
 
 class DiffSamplingEnv(object):
 
-    def __init__(self, device,
-                 batch_seeds,
+    def __init__(self,
+                 net,
+                 # batch_seeds,
                  dataset_name,
                  batch_size,
                  num_steps,
                  schedule_type,
                  schedule_rho,
-                 net,
                  outdir=None,
+                 device='cuda',
+                 reward_scale=100,
                  **kwargs):
         # Pick latents and labels.
-        self.device = device
-        self.batch_size = batch_size
+        self.device = torch.device(device)
+        self.batch_size = self.num_envs = batch_size
+        self.num_actions = 2
 
         assert dataset_name in ['cifar10']
         self.dataset_name = dataset_name
@@ -127,7 +130,7 @@ class DiffSamplingEnv(object):
                                     schedule_type=schedule_type,
                                     schedule_rho=schedule_rho,
                                     net=net,
-                                    device=device)
+                                    device=self.device)
         """
         Besides, for AMED-Solver on CIFAR10 32×32 [21], 
         FFHQ 64×64 [17] and ImageNet 64×64 [37],
@@ -137,9 +140,12 @@ class DiffSamplingEnv(object):
         in the paper.
         """
         self.solver_kwargs = kwargs
-        pass
+        self.reward_scale = reward_scale
+        self.reset(batch_seeds = range(self.batch_size))
 
     def reset(self, batch_seeds = None):
+        if batch_seeds is None:
+            batch_seeds = range(self.batch_size)
         self.rnd = StackedRandomGenerator(self.device, batch_seeds)
         self.latents = self.rnd.randn([self.batch_size,
                                        self.net.img_channels,
@@ -152,11 +158,35 @@ class DiffSamplingEnv(object):
         self.class_labels, self.c, self.uc = self.__reset_class_labels(batch_seeds)
         self.traj_mean = None
         self.sum_of_square = None
+
+        # Get UNet enc out as observations.
+        unet_enc_out, hook = init_hook(self.net, self.class_labels)
+        _ = get_denoised(self.net, self.x, self.t_steps[0],
+                                class_labels=self.class_labels,
+                                condition=self.c,
+                                unconditional_condition=self.uc)
+        hook.remove()
+        self.observation = torch.mean(unet_enc_out[-1], dim=1)
         return self.latents, {}
+
+    def get_observations(self):
+
+        if self.observation is not None and self.x is not None:
+            flatten_obs = self.observation.reshape(self.batch_size, -1)
+            t_cur = self.t_steps[self.current_step] * torch.ones([self.batch_size, 1]).to(self.device)
+            t_next = self.t_steps[self.current_step + 1] * torch.ones([self.batch_size, 1]).to(self.device)
+            whole_obs = torch.cat([flatten_obs, t_cur, t_next], dim=1)
+            return (whole_obs,
+                    {'observations':{'critic': whole_obs}})
+        else:
+            raise ValueError('Please first call reset')
 
 
     def step(self, action):
-        r, scale_dir, scale_time = action
+        r, scale_dir = action[:, 0], action[:, 1]
+        r = r.reshape(-1, 1, 1, 1)
+        scale_dir = scale_dir.reshape(-1, 1, 1, 1)
+        scale_time = torch.ones_like(scale_dir, device=self.device)
         t_cur = self.t_steps[self.current_step]
         t_next = self.t_steps[self.current_step + 1]
         x_cur = self.x
@@ -170,6 +200,7 @@ class DiffSamplingEnv(object):
 
         d_cur = (x_cur - denoised) / t_cur
         hook.remove()
+        self.observation = torch.mean(unet_enc_out[-1], dim=1)
         t_cur = t_cur.reshape(-1, 1, 1, 1)
         t_next = t_next.reshape(-1, 1, 1, 1)
 
@@ -187,9 +218,10 @@ class DiffSamplingEnv(object):
 
         rewards = self.get_rewards(denoised)
         dones = self.get_dones()
+        obs = self.get_observations()[0]
         self.current_step += 1
 
-        return (unet_enc_out, t_cur, t_next), rewards, dones, {}
+        return obs, rewards, dones, {"observations": {}}
 
     def step_euler(self):
         t_cur = self.t_steps[self.current_step]
@@ -255,16 +287,16 @@ class DiffSamplingEnv(object):
         new_mean_flatten_var = torch.mean(torch.reshape(traj_var, [self.batch_size, -1]), dim=1)
         reward = new_mean_flatten_var - self.mean_flatten_var
         self.mean_flatten_var = new_mean_flatten_var
-        return reward
+        return self.reward_scale * reward
     
     def get_current_mean_flatten_var(self):
         return self.mean_flatten_var
 
     def get_dones(self):
         if self.current_step != len(self.t_steps) - 2:
-            return 0
+            return torch.zeros([self.batch_size], device=self.device)
         else:
-            return 1
+            return torch.ones([self.batch_size], device=self.device)
 
     def save_images(self, img = None, grid=True, outdir=None):
         from torchvision.utils import make_grid, save_image

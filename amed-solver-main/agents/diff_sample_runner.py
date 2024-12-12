@@ -15,7 +15,7 @@ from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
-from agents.rl_agent import DiffSamplerPolicy
+from agents.rl_agent import DiffSamplerActorCritic
 
 
 class DiffSamplerOnPolicyRunner:
@@ -33,13 +33,13 @@ class DiffSamplerOnPolicyRunner:
             num_critic_obs = extras["observations"]["critic"].shape[1]
         else:
             num_critic_obs = num_obs
-        actor_critic_class = eval(self.policy_cfg.pop("class_name"))  # ActorCritic
-        actor_critic: DiffSamplerPolicy = actor_critic_class(
+        actor_critic_class = eval(self.policy_cfg.class_name)  # ActorCritic
+        actor_critic: DiffSamplerActorCritic = actor_critic_class(
             **self.policy_cfg
         ).to(self.device)
-        alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
+        alg_class = eval(self.cfg.runner.alg_class_name)  # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
-        self.num_steps_per_env = self.cfg["num_steps_per_env"]
+        self.num_steps_per_env = self.cfg.env.num_steps - 1
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
         if self.empirical_normalization:
@@ -93,7 +93,7 @@ class DiffSamplerOnPolicyRunner:
             )
         obs, extras = self.env.get_observations()
         critic_obs = extras["observations"].get("critic", obs)
-        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        # obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
         self.train_mode()  # switch to train mode (for dropout for example)
 
         ep_infos = []
@@ -109,15 +109,16 @@ class DiffSamplerOnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
+                    print(i, self.env.current_step)
                     actions = self.alg.act(obs, critic_obs)
                     obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
                     # move to the right device
-                    obs, critic_obs, rewards, dones = (
-                        obs.to(self.device),
-                        critic_obs.to(self.device),
-                        rewards.to(self.device),
-                        dones.to(self.device),
-                    )
+                    # obs, critic_obs, rewards, dones = (
+                    #     obs.to(self.device),
+                    #     critic_obs.to(self.device),
+                    #     rewards.to(self.device),
+                    #     dones.to(self.device),
+                    # )
                     # perform normalization
                     obs = self.obs_normalizer(obs)
                     if "critic" in infos["observations"]:
@@ -149,6 +150,7 @@ class DiffSamplerOnPolicyRunner:
                 # Learning step
                 start = stop
                 self.alg.compute_returns(critic_obs)
+                self.env.reset()
 
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()

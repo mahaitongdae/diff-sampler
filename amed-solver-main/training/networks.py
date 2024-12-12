@@ -81,8 +81,8 @@ class AMED_predictor(torch.nn.Module):
         lower_order_final       = True,
     ):
         super().__init__()
-        assert sampler_stu in ['amed', 'dpm', 'dpmpp', 'euler', 'ipndm']
-        assert sampler_tea in ['heun', 'dpm', 'dpmpp', 'euler', 'ipndm']
+        # assert sampler_stu in ['amed', 'dpm', 'dpmpp', 'euler', 'ipndm']
+        # assert sampler_tea in ['heun', 'dpm', 'dpmpp', 'euler', 'ipndm']
         assert scale_dir >= 0
         assert scale_time >= 0
         self.dataset_name = dataset_name
@@ -156,7 +156,7 @@ class AMED_predictor(torch.nn.Module):
 
 
 @persistence.persistent_class
-class AMEDActorCritic(AMED_predictor):
+class AMEDPredictorWithValue(AMED_predictor):
     def __init__(
             self,
             hidden_dim = 128,
@@ -207,6 +207,7 @@ class AMEDActorCritic(AMED_predictor):
 
         self.fc_value = Linear(2 * noise_channels + bottleneck_output_dim, output_dim)
 
+
     def forward(self, unet_bottleneck, t_cur, t_next, class_labels = None):
         # Encode the current and next time steps, then concatenate them
         emb = self.map_noise(t_cur.reshape(1, ))
@@ -218,7 +219,7 @@ class AMEDActorCritic(AMED_predictor):
         emb = torch.cat((emb, emb1), dim=1)
 
         # Encode the U-Net bottlenect and concatenate it with the time-embedding
-        unet_bottleneck = unet_bottleneck.reshape(unet_bottleneck.shape[0], -1)
+        # unet_bottleneck = unet_bottleneck.reshape(unet_bottleneck.shape[0], -1)
         unet_bottleneck = self.enc_layer0(unet_bottleneck)
         unet_bottleneck = silu(unet_bottleneck)
         unet_bottleneck = self.enc_layer1(unet_bottleneck)
@@ -235,10 +236,9 @@ class AMEDActorCritic(AMED_predictor):
 
         if self.scale_dir:
             scale_dir = self.fc_scale_dir(out)
-            scale_dir = self.sigmoid(scale_dir) / (1 / (2 * self.scale_dir)) + (1 - self.scale_dir)
             # scale the 0-1 output to [1 - self.scale_dir , 1 + self.scale_dir]
             if not self.scale_time:
-                return r, scale_dir, value
+                return torch.cat([r, scale_dir], dim=1), value
 
         # if self.scale_time:
         #     scale_time = self.fc_scale_time(out)
