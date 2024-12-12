@@ -58,18 +58,18 @@ class AMED_predictor(torch.nn.Module):
     def __init__(
         self,
         hidden_dim              = 128,
-        output_dim              = 1, 
-        bottleneck_input_dim    = 64, 
-        bottleneck_output_dim   = 4, 
-        noise_channels          = 8,  
+        output_dim              = 1,
+        bottleneck_input_dim    = 64,
+        bottleneck_output_dim   = 4,
+        noise_channels          = 8,
         embedding_type          = 'positional',
         dataset_name            = None,
         img_resolution          = None,
         num_steps               = None,
-        sampler_tea             = None, 
-        sampler_stu             = None, 
+        sampler_tea             = None,
+        sampler_stu             = None,
         M                       = None,
-        guidance_type           = None,      
+        guidance_type           = None,
         guidance_rate           = None,
         schedule_type           = None,
         schedule_rho            = None,
@@ -101,15 +101,15 @@ class AMED_predictor(torch.nn.Module):
         self.max_order = max_order
         self.predict_x0 = predict_x0
         self.lower_order_final = lower_order_final
-        
+
         init = dict(init_mode='xavier_uniform')
-        
+
         self.map_noise = PositionalEmbedding(num_channels=noise_channels, endpoint=True)
         self.map_layer0 = Linear(in_features=noise_channels, out_features=noise_channels, **init)
-        
+
         self.enc_layer0 = Linear(bottleneck_input_dim, hidden_dim)
         self.enc_layer1 = Linear(hidden_dim, bottleneck_output_dim)
-        
+
         self.fc_r = Linear(2 * noise_channels + bottleneck_output_dim, output_dim)
         if self.scale_dir:
             self.fc_scale_dir = Linear(2 * noise_channels + bottleneck_output_dim, output_dim)
@@ -127,7 +127,7 @@ class AMED_predictor(torch.nn.Module):
         emb1 = emb1.reshape(emb1.shape[0], 2, -1).flip(1).reshape(*emb1.shape) # swap sin/cos
         emb1 = silu(self.map_layer0(emb1)).repeat(unet_bottleneck.shape[0], 1)
         emb = torch.cat((emb, emb1), dim=1)
-        
+
         # Encode the U-Net bottlenect and concatenate it with the time-embedding
         unet_bottleneck = unet_bottleneck.reshape(unet_bottleneck.shape[0], -1)
         unet_bottleneck = self.enc_layer0(unet_bottleneck)
@@ -153,3 +153,100 @@ class AMED_predictor(torch.nn.Module):
                 return r, scale_dir, scale_time
 
         return r
+
+
+@persistence.persistent_class
+class AMEDActorCritic(AMED_predictor):
+    def __init__(
+            self,
+            hidden_dim = 128,
+            output_dim = 1,
+            bottleneck_input_dim = 64,
+            bottleneck_output_dim = 4,
+            noise_channels = 8,
+            embedding_type = 'positional',
+            dataset_name = None,
+            img_resolution = None,
+            num_steps = None,
+            sampler_tea = None,
+            sampler_stu = None,
+            M = None,
+            guidance_type = None,
+            guidance_rate = None,
+            schedule_type = None,
+            schedule_rho = None,
+            afs = False,
+            scale_dir = 0,
+            scale_time = 0,
+            max_order = None,
+            predict_x0 = True,
+            lower_order_final = True,
+    ):
+        super().__init__(hidden_dim=hidden_dim,
+            output_dim=output_dim,
+            bottleneck_input_dim=bottleneck_input_dim,
+            bottleneck_output_dim=bottleneck_output_dim,
+            noise_channels=noise_channels,
+            embedding_type=embedding_type,
+            dataset_name=dataset_name,
+            img_resolution=img_resolution,
+            num_steps=num_steps,
+            sampler_tea=sampler_tea,
+            sampler_stu=sampler_stu,
+            M=M,
+            guidance_type=guidance_type,
+            guidance_rate=guidance_rate,
+            schedule_type=schedule_type,
+            schedule_rho=schedule_rho,
+            afs=afs,
+            scale_dir=scale_dir,
+            scale_time=scale_time,
+            max_order=max_order,
+            predict_x0=predict_x0,
+            lower_order_final=lower_order_final,)
+
+        self.fc_value = Linear(2 * noise_channels + bottleneck_output_dim, output_dim)
+
+    def forward(self, unet_bottleneck, t_cur, t_next, class_labels = None):
+        # Encode the current and next time steps, then concatenate them
+        emb = self.map_noise(t_cur.reshape(1, ))
+        emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)  # swap sin/cos
+        emb = silu(self.map_layer0(emb)).repeat(unet_bottleneck.shape[0], 1)
+        emb1 = self.map_noise(t_next.reshape(1, ))
+        emb1 = emb1.reshape(emb1.shape[0], 2, -1).flip(1).reshape(*emb1.shape)  # swap sin/cos
+        emb1 = silu(self.map_layer0(emb1)).repeat(unet_bottleneck.shape[0], 1)
+        emb = torch.cat((emb, emb1), dim=1)
+
+        # Encode the U-Net bottlenect and concatenate it with the time-embedding
+        unet_bottleneck = unet_bottleneck.reshape(unet_bottleneck.shape[0], -1)
+        unet_bottleneck = self.enc_layer0(unet_bottleneck)
+        unet_bottleneck = silu(unet_bottleneck)
+        unet_bottleneck = self.enc_layer1(unet_bottleneck)
+        out = torch.cat((unet_bottleneck, emb), dim=1)
+
+        r = self.fc_r(out)
+
+
+        value = self.fc_value(out)
+        value = silu(value)
+        # Todo: now the value function should be non-negative.
+        #  variance-based rewards should be fine, but other reward should be careful.
+
+
+        if self.scale_dir:
+            scale_dir = self.fc_scale_dir(out)
+            scale_dir = self.sigmoid(scale_dir) / (1 / (2 * self.scale_dir)) + (1 - self.scale_dir)
+            # scale the 0-1 output to [1 - self.scale_dir , 1 + self.scale_dir]
+            if not self.scale_time:
+                return r, scale_dir, value
+
+        # if self.scale_time:
+        #     scale_time = self.fc_scale_time(out)
+        #     scale_time = self.sigmoid(scale_time) / (1 / (2 * self.scale_time)) + (1 - self.scale_time)
+        #     if not self.scale_dir:
+        #         return r, scale_time
+        #     else:
+        #         return r, scale_dir, scale_time
+
+        return r, value
+

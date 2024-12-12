@@ -67,7 +67,7 @@ train.py --dataset_name="ms_coco" --batch=32 --total_kimg=5 $SOLVER_FLAGS $SCHED
 ################# B. Generate 50k samples for FID evaluation #################
 # After finishing the training, the AMED predictor will be saved at "./exps" with a five digit experiment number (e.g. 00000). 
 # The settings for sampling are stored in the predictor. You can sample with the AMED predictor by giving the file path 
-# or the exp number (e.g. 0) of the AMED predictor in ```--predictor_path```
+# or the exps number (e.g. 0) of the AMED predictor in ```--predictor_path```
 # B.1. Usually used
 torchrun --standalone --nproc_per_node=4 --master_port=22222 \
 sample.py --predictor_path=0 --batch=128 --seeds="0-49999"
