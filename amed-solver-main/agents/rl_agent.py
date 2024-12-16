@@ -85,7 +85,7 @@ class DiffSamplerActorCritic(nn.Module):
     def update_distribution(self, obs, t_cur, t_next):
         mean, _ = self.shared_network(obs, t_cur, t_next)
         self.distribution = Normal(mean, mean * 0.0 + self.std)
-    def act(self, observations):
+    def act(self, observations, **kwargs):
         x, t_cur, t_next = self.decompose_obs(observations)
         mean, _ = self.shared_network(x, t_cur, t_next)
         self.distribution = Normal(mean, mean * 0.0 + self.std)
