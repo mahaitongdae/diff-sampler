@@ -1,9 +1,16 @@
+import os
+
+import sys
+print(os.path.dirname(__file__))
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 from solver_utils import *
 from solvers_amed import get_denoised, init_hook, get_amed_prediction
 from sample import StackedRandomGenerator
+
 from rsl_rl.env import VecEnv
 import torch
-import os
+
 def amed_sampler(
         net,
         latents,
@@ -180,10 +187,23 @@ class DiffSamplingEnv(object):
                     {'observations':{'critic': whole_obs}})
         else:
             raise ValueError('Please first call reset')
+        
+    def preprocess_action(self, action):
+        """
+        preprocess actions. Usually the actions are between [-1, 1],
+        while we reshape it to 
+        r: [0, 1]
+        scale_dir: [0.8, 1.2]
+        """
+        raw_r, raw_scale_dir = action[:, 0], action[:, 1]
+        r = 0.5 * (raw_r + 1.)
+        scale_dir = 1. + 0.2 * raw_scale_dir
+        return r, scale_dir
+        
 
 
     def step(self, action):
-        r, scale_dir = action[:, 0], action[:, 1]
+        r, scale_dir = self.preprocess_action(action)
         r = r.reshape(-1, 1, 1, 1)
         scale_dir = scale_dir.reshape(-1, 1, 1, 1)
         scale_time = torch.ones_like(scale_dir, device=self.device)
@@ -217,6 +237,7 @@ class DiffSamplingEnv(object):
         self.x = x_next
 
         rewards = self.get_rewards(denoised)
+        # rewards = torch.linalg.norm(d_mid, dim)
         dones = self.get_dones()
         obs = self.get_observations()[0]
         self.current_step += 1
@@ -274,7 +295,7 @@ class DiffSamplingEnv(object):
                     self.rnd.randint(self.net.label_dim, size=[self.batch_size], device=self.device)]
         return class_labels, c, uc
 
-    def get_rewards(self, denoised):
+    def get_rewards_variance(self, denoised):
         n = self.current_step + 1
         if self.traj_mean is None:
             self.traj_mean = denoised.clone()
@@ -354,8 +375,8 @@ if __name__ == '__main__':
         rs.append(r.cpu().numpy())
     print(env.current_step, done)
     plt.plot(rs)
-    plt.show()
-    # env.save_images()
+    # plt.show()
+    env.save_images()
 
 
 
