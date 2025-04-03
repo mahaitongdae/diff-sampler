@@ -1,6 +1,9 @@
 import os
 
 import sys
+
+import numpy as np
+
 print(os.path.dirname(__file__))
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -112,11 +115,10 @@ class DiffSamplingEnv(object):
 
     def __init__(self,
                  net,
-                 # batch_seeds,
-                 dataset_name,
-                 batch_size,
-                 num_steps,
-                 schedule_type,
+                 dataset_name: str,
+                 batch_size: int,
+                 num_steps: int,
+                 schedule_type: str ,
                  schedule_rho,
                  outdir=None,
                  device='cuda',
@@ -127,7 +129,7 @@ class DiffSamplingEnv(object):
         self.batch_size = self.num_envs = batch_size
         self.num_actions = 2
 
-        assert dataset_name in ['cifar10']
+        assert dataset_name in ['cifar10', 'afhqv2']
         self.dataset_name = dataset_name
         # if dataset_name == 'cifar10':
         self.net = net
@@ -236,7 +238,9 @@ class DiffSamplingEnv(object):
         x_next = x_cur + scale_dir * (t_next - t_cur) * d_mid
         self.x = x_next
 
-        rewards = self.get_rewards(denoised)
+
+        # rewards = self.get_rewards_variance(denoised)
+        rewards = -1. * torch.linalg.norm(d_cur, dim=1).mean(dim=(1, 2)) # [batch_size, channel, resolution, resolution]
         # rewards = torch.linalg.norm(d_mid, dim)
         dones = self.get_dones()
         obs = self.get_observations()[0]
@@ -266,7 +270,7 @@ class DiffSamplingEnv(object):
         x_next = x_cur + (t_next - t_cur) * d_cur
         self.x = x_next
 
-        rewards = self.get_rewards(denoised)
+        rewards = self.get_rewards_variance(denoised)
         dones = self.get_dones()
         self.current_step += 1
 
@@ -326,13 +330,16 @@ class DiffSamplingEnv(object):
             if grid:
                 outdir = os.path.join(f"./samples/grids/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
             else:
-                outdir = os.path.join(f"./samples/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
+                outdir = os.path.join(f"/samples/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
         if grid:
             images = torch.clamp(images / 2 + 0.5, 0, 1)
             os.makedirs(outdir, exist_ok=True)
             nrows = int(images.shape[0] ** 0.5)
             image_grid = make_grid(images, nrows, padding=0)
             save_image(image_grid, os.path.join(outdir, "grid.png"))
+
+    def get_current_image(self):
+        return self.x
 
     def sample_via_sample_fn(self,):
         from solvers_amed import euler_sampler
@@ -349,34 +356,39 @@ if __name__ == '__main__':
     import torch
     from matplotlib import pyplot as plt
     from tqdm import tqdm
-    model_path, classifier_path = check_file_by_key('cifar10', subsubdir='../src')
+    from torch_utils.visualize_rewards import draw_indices_on_images
+    model_path, classifier_path = check_file_by_key('afhqv2', subsubdir='../src')
     with dnnlib.util.open_url(model_path) as f:
         net = pickle.load(f)['ema'].to(torch.device('cuda'))
     net.sigma_min = 0.002
     net.sigma_max = 80.0
-    batch_size = 8
-    num_steps = 1000
+    batch_size = 16
+    num_steps = 100
     env = DiffSamplingEnv(
         device=torch.device('cuda'),
         batch_seeds=1,
-        dataset_name='cifar10',
+        dataset_name='afhqv2',
         batch_size=batch_size,
         num_steps=num_steps,
         schedule_type='time_uniform',
         schedule_rho=1.0,
         net=net,
     )
-    env.reset(batch_seeds=torch.randint(low=0, high=1000, size=(batch_size,)))
+    env.reset() # batch_seeds=torch.randint(low=0, high=1000, size=(batch_size,))
     # img = env.sample_via_sample_fn()
     done = False
     rs = []
     for i in tqdm(range(num_steps - 1)):
-        enc_out, r, done, _ = env.step_euler()
+        enc_out, r, done, _ = env.step(torch.zeros((batch_size, 2), device=torch.device('cuda')))
         rs.append(r.cpu().numpy())
     print(env.current_step, done)
-    plt.plot(rs)
-    # plt.show()
-    env.save_images()
+    rs = np.array(rs).sum(axis=0)
+    print(rs)
+    img = torch.clamp(env.get_current_image() / 2 + 0.5, 0, 1)
+    img = draw_indices_on_images(img, rs)
+
+    env.save_images(img)
+    # env.save_images()
 
 
 

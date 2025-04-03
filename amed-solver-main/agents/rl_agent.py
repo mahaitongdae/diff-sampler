@@ -4,6 +4,7 @@ import torch
 from training.networks import AMEDPredictorWithValue
 from torch.nn.functional import silu
 from torch.distributions import Normal
+import math
 
 
 class DiffSamplerActorCritic(nn.Module):
@@ -93,31 +94,34 @@ class DiffSamplerActorCritic(nn.Module):
         return self.post_processing_action(actions)
 
     def post_processing_action(self, actions):
-        r = actions[:, [0]]
-        scale_dir = actions[:, [1]]
-        bounded_r = self.sigmoid(r)
-        bounded_scale_dir = self.sigmoid(scale_dir) / (1 / (2 * self.shared_network.scale_dir)) + (1 - self.shared_network.scale_dir)
-        return torch.cat([bounded_r, bounded_scale_dir], dim=1)
+        # r = actions[:, [0]]
+        # scale_dir = actions[:, [1]]
+        # bounded_r = self.sigmoid(r)
+        # bounded_scale_dir = self.sigmoid(scale_dir) / (1 / (2 * self.shared_network.scale_dir)) + (1 - self.shared_network.scale_dir)
+        # return torch.cat([bounded_r, bounded_scale_dir], dim=1)
+        return torch.tanh(actions)
 
-    def reverse_transform_actions(self, actions):
-        bounded_scale_dir = actions[:, [1]]
-        bounded_r = actions[:, [0]]
-        bounded_scale_dir = (bounded_scale_dir - (1 - self.shared_network.scale_dir)) / (2 * self.shared_network.scale_dir)
-        squashed_actions = torch.cat([bounded_r, bounded_scale_dir], dim=1)
-        true_actions = -1. * torch.log(torch.reciprocal(squashed_actions) - 1.)
-        return true_actions
+    def reverse_transform_actions(self, actions, epsilon=1e-6):
+        # bounded_scale_dir = actions[:, [1]]
+        # bounded_r = actions[:, [0]]
+        # bounded_scale_dir = (bounded_scale_dir - (1 - self.shared_network.scale_dir)) / (2 * self.shared_network.scale_dir)
+        # squashed_actions = torch.cat([bounded_r, bounded_scale_dir], dim=1)
+        # true_actions = -1. * torch.log(torch.reciprocal(squashed_actions) - 1.)
+        return 0.5 * (torch.log1p(actions + epsilon) - torch.log1p(-actions + epsilon))  # arctanh(a)
+
 
     def get_actions_log_prob(self, actions):
         # raise NotImplementedError
         # r = actions[:, [0]]
         # scale_dir = actions[:, [1]]
         true_actions = self.reverse_transform_actions(actions)
-        return self.distribution.log_prob(true_actions).sum(dim=-1)
+        logp = self.distribution.log_prob(true_actions) - (2 * (math.log(2.) - true_actions - torch.softplus(-2 * actions)))
+        return logp.sum(dim=-1)
 
     def act_inference(self, observations):
         x, t_cur, t_next = self.decompose_obs(observations)
         actions_mean, _, _ = self.shared_network(x, t_cur, t_next)
-        return torch.sigmoid(actions_mean)
+        return torch.tanh(actions_mean)
 
     def evaluate(self, critic_observations, **kwargs):
         x, t_cur, t_next = self.decompose_obs(critic_observations)

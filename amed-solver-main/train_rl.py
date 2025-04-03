@@ -64,7 +64,7 @@ warnings.filterwarnings('ignore', 'Grad strides do not match bucket view strides
 # @click.option('--seed',             help='Random seed  [default: random]', metavar='INT',              type=int)
 # @click.option('-n', '--dry-run',    help='Print training options and exit',                            is_flag=True)
 
-@hydra.main(config_path='conf', config_name='edm_cifar10.yaml')
+@hydra.main(config_path='conf', config_name='edm_afhq2.yaml')
 def main(cfg):
     OmegaConf.resolve(cfg)
     print(cfg)
@@ -120,7 +120,7 @@ def main(cfg):
         desc = f'{cfg.dataset_name:s}-{cfg.env.num_steps}-{nfe}-{cfg.m}-{schedule_str}-afs'
     else:
         desc = f'{cfg.dataset_name:s}-{cfg.env.num_steps}-{nfe}-{cfg.m}-{schedule_str}'
-    if cfg.desc is not None:
+    if cfg.desc != "None":
         desc += f'{cfg.desc}'
 
     # Pick output directory.
@@ -167,7 +167,6 @@ def main(cfg):
 
     # Train.
 
-    env_cfg = cfg.env
     # Load pre-trained denoising network.
     net = create_model(dataset_name=cfg.dataset_name, device=torch.device(cfg.device),
                        subsubdir=model_dir)[0]
@@ -181,7 +180,7 @@ def main(cfg):
                         train_cfg=cfg,
                         device=cfg.device,
                         log_dir=run_dir,)
-    ppo_runner.learn(num_learning_iterations=10)
+    ppo_runner.learn(num_learning_iterations=cfg.runner.max_iterations)
 
 
 #----------------------------------------------------------------------------
