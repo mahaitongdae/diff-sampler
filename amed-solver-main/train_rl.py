@@ -1,7 +1,5 @@
 import os
 import re
-import json
-import click
 import torch
 import dnnlib
 from torch_utils import distributed as dist

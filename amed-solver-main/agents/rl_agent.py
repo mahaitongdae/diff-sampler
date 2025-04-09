@@ -115,7 +115,7 @@ class DiffSamplerActorCritic(nn.Module):
         # r = actions[:, [0]]
         # scale_dir = actions[:, [1]]
         true_actions = self.reverse_transform_actions(actions)
-        logp = self.distribution.log_prob(true_actions) - (2 * (math.log(2.) - true_actions - torch.softplus(-2 * actions)))
+        logp = self.distribution.log_prob(true_actions) - (2 * (math.log(2.) - true_actions - torch.nn.functional.softplus(-2 * actions)))
         return logp.sum(dim=-1)
 
     def act_inference(self, observations):

@@ -1,0 +1,61 @@
+from omegaconf import OmegaConf
+import torch
+from agents.diff_sample_runner import DiffSamplerOnPolicyRunner
+from envs.diff_sampling_env import DiffSamplingEnv
+from sample import create_model
+from agents.config import get_args, class_to_dict
+import os
+from tqdm import tqdm
+
+base = os.path.dirname(__file__)
+
+# 1. Path to saved experiment
+exp_dir = "/exps/2025-04-08/16-40-11-afhqv2"
+exp_dir = f"{base}/{exp_dir}"
+
+hydra_config_path = f"{exp_dir}/.hydra/config.yaml"
+exp_index = '00000'
+for dir in os.listdir(exp_dir):
+    if dir.startswith(exp_index):
+        model_dir = f"{exp_dir}/{dir}"
+model_path = f"{model_dir}/model.pt"
+
+# 2. Load config
+cfg = OmegaConf.load(hydra_config_path)
+
+# 3. (Optional) Reconstruct the model using the config
+# This step depends on how your model is defined in the config
+# For example:
+net = create_model(dataset_name=cfg.dataset_name, device=torch.device(cfg.device),
+                       subsubdir='./src/')[0]
+env = DiffSamplingEnv(net=net,
+                      dataset_name=cfg.dataset_name,
+                      device=cfg.device,
+                      **class_to_dict(cfg.env)
+                      )
+Runner = DiffSamplerOnPolicyRunner
+ppo_runner = Runner(env=env,
+                    train_cfg=cfg,
+                    device=cfg.device,
+                    log_dir=exp_dir,)
+
+policy = ppo_runner.alg.actor_critic.act_inference
+
+env.reset()  # batch_seeds=torch.randint(low=0, high=1000, size=(batch_size,))
+# img = env.sample_via_sample_fn()
+done = False
+rs = []
+for i in tqdm(range(cfg.env.num_steps - 1)):
+    enc_out, r, done, _ = env.step(torch.zeros((cfg.env.batch_size, 2), device=torch.device('cuda')))
+    rs.append(r.cpu().numpy())
+print(env.current_step, done)
+# rs = np.array(rs).sum(axis=0)
+# print(rs)
+# img = torch.clamp(env.get_current_image() / 2 + 0.5, 0, 1)
+# # img = draw_indices_on_images(img, rs)
+#
+# env.save_images(img)
+env.save_images(outdir=exp_dir)
+
+
+

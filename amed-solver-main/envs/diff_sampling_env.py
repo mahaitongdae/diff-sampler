@@ -154,7 +154,7 @@ class DiffSamplingEnv(object):
 
     def reset(self, batch_seeds = None):
         if batch_seeds is None:
-            batch_seeds = range(self.batch_size)
+            batch_seeds = torch.arange(16, self.batch_size + 16)
         self.rnd = StackedRandomGenerator(self.device, batch_seeds)
         self.latents = self.rnd.randn([self.batch_size,
                                        self.net.img_channels,
@@ -331,6 +331,7 @@ class DiffSamplingEnv(object):
                 outdir = os.path.join(f"./samples/grids/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
             else:
                 outdir = os.path.join(f"/samples/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
+        os.makedirs(outdir, exist_ok=True)
         if grid:
             images = torch.clamp(images / 2 + 0.5, 0, 1)
             os.makedirs(outdir, exist_ok=True)
@@ -363,7 +364,7 @@ if __name__ == '__main__':
     net.sigma_min = 0.002
     net.sigma_max = 80.0
     batch_size = 16
-    num_steps = 100
+    num_steps = 25
     env = DiffSamplingEnv(
         device=torch.device('cuda'),
         batch_seeds=1,
@@ -384,11 +385,11 @@ if __name__ == '__main__':
     print(env.current_step, done)
     rs = np.array(rs).sum(axis=0)
     print(rs)
-    img = torch.clamp(env.get_current_image() / 2 + 0.5, 0, 1)
-    img = draw_indices_on_images(img, rs)
-
-    env.save_images(img)
-    # env.save_images()
+    # img = torch.clamp(env.get_current_image() / 2 + 0.5, 0, 1)
+    # # img = draw_indices_on_images(img, rs)
+    #
+    # env.save_images(img)
+    env.save_images()
 
 
 
