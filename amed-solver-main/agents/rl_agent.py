@@ -120,7 +120,7 @@ class DiffSamplerActorCritic(nn.Module):
 
     def act_inference(self, observations):
         x, t_cur, t_next = self.decompose_obs(observations)
-        actions_mean, _, _ = self.shared_network(x, t_cur, t_next)
+        actions_mean, _ = self.shared_network(x, t_cur, t_next)
         return torch.tanh(actions_mean)
 
     def evaluate(self, critic_observations, **kwargs):

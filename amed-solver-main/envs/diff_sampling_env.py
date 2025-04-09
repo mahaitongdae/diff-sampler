@@ -176,7 +176,7 @@ class DiffSamplingEnv(object):
                                 unconditional_condition=self.uc)
         hook.remove()
         self.observation = torch.mean(unet_enc_out[-1], dim=1)
-        return self.latents, {}
+        return self.get_observations()[0], {}
 
     def get_observations(self):
 

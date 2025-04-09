@@ -18,7 +18,7 @@ exp_index = '00000'
 for dir in os.listdir(exp_dir):
     if dir.startswith(exp_index):
         model_dir = f"{exp_dir}/{dir}"
-model_path = f"{model_dir}/model.pt"
+model_path = f"{model_dir}/model_0.pt"
 
 # 2. Load config
 cfg = OmegaConf.load(hydra_config_path)
@@ -28,9 +28,11 @@ cfg = OmegaConf.load(hydra_config_path)
 # For example:
 net = create_model(dataset_name=cfg.dataset_name, device=torch.device(cfg.device),
                        subsubdir='./src/')[0]
+cfg.env.batch_size = 8
 env = DiffSamplingEnv(net=net,
                       dataset_name=cfg.dataset_name,
                       device=cfg.device,
+                      # batch_size=8,
                       **class_to_dict(cfg.env)
                       )
 Runner = DiffSamplerOnPolicyRunner
@@ -38,15 +40,17 @@ ppo_runner = Runner(env=env,
                     train_cfg=cfg,
                     device=cfg.device,
                     log_dir=exp_dir,)
-
+ppo_runner.load(model_path,)
 policy = ppo_runner.alg.actor_critic.act_inference
 
-env.reset()  # batch_seeds=torch.randint(low=0, high=1000, size=(batch_size,))
+enc_out, _ = env.reset()  # batch_seeds=torch.randint(low=0, high=1000, size=(batch_size,))
 # img = env.sample_via_sample_fn()
 done = False
 rs = []
 for i in tqdm(range(cfg.env.num_steps - 1)):
-    enc_out, r, done, _ = env.step(torch.zeros((cfg.env.batch_size, 2), device=torch.device('cuda')))
+    with torch.no_grad():
+        act = policy(enc_out)
+    enc_out, r, done, _ = env.step(act)
     rs.append(r.cpu().numpy())
 print(env.current_step, done)
 # rs = np.array(rs).sum(axis=0)
