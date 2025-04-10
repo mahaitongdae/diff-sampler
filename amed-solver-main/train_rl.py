@@ -115,9 +115,9 @@ def main(cfg):
     nfe = 2 * (cfg.env.num_steps - 1) - 1 if cfg.afs else 2 * (cfg.env.num_steps - 1)
     nfe = 2 * nfe if cfg.dataset_name == 'ms_coco' else nfe
     if cfg.afs == True:
-        desc = f'{cfg.dataset_name:s}-{cfg.env.num_steps}-{nfe}-{cfg.m}-{schedule_str}-afs'
+        desc = f'{cfg.dataset_name:s}-{cfg.env.num_steps}-{cfg.m}-{schedule_str}-afs' # -{nfe}
     else:
-        desc = f'{cfg.dataset_name:s}-{cfg.env.num_steps}-{nfe}-{cfg.m}-{schedule_str}'
+        desc = f'{cfg.dataset_name:s}-{cfg.env.num_steps}-{cfg.m}-{schedule_str}' # -{nfe}
     if cfg.desc != "None":
         desc += f'{cfg.desc}'
 

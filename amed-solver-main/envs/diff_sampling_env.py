@@ -10,8 +10,6 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from solver_utils import *
 from solvers_amed import get_denoised, init_hook, get_amed_prediction
 from sample import StackedRandomGenerator
-
-from rsl_rl.env import VecEnv
 import torch
 
 def amed_sampler(
@@ -323,9 +321,11 @@ class DiffSamplingEnv(object):
         else:
             return torch.ones([self.batch_size], device=self.device)
 
-    def save_images(self, img = None, grid=True, outdir=None):
+    def save_images(self, img = None, grid=True, outdir=None, fname=None):
         from torchvision.utils import make_grid, save_image
         images = self.x if img is None else img
+        if fname is None:
+            fname = "grid.png" 
         if outdir is None:
             if grid:
                 outdir = os.path.join(f"./samples/grids/{self.dataset_name}", f"env_rollout_nfe{len(self.t_steps) - 1}")
@@ -337,7 +337,7 @@ class DiffSamplingEnv(object):
             os.makedirs(outdir, exist_ok=True)
             nrows = int(images.shape[0] ** 0.5)
             image_grid = make_grid(images, nrows, padding=0)
-            save_image(image_grid, os.path.join(outdir, "grid.png"))
+            save_image(image_grid, os.path.join(outdir, fname))
 
     def get_current_image(self):
         return self.x

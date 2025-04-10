@@ -1,6 +1,6 @@
 hydra:
   run:
-    dir: ./exps/${now:%Y-%m-%d}/${now:%H-%M-%S}-${dataset_name}
+    dir: ./exps/${now:%Y-%m-%d}/${now:%H-%M-%S}-${dataset_name}-${env.num_steps}
 
 seed: 1
 runner_class_name: 'DiffSamplerOnPolicyRunner'
@@ -22,8 +22,8 @@ model:
   guidance_rate: None
   
 env:
-  batch_size: 64
-  num_steps: 10
+  batch_size: 256
+  num_steps: 50
   schedule_type: 'time_uniform'
   schedule_rho: 1.0
   reward_scale: 100
