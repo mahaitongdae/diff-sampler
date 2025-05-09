@@ -5,7 +5,7 @@ hydra:
 seed: 1
 runner_class_name: 'DiffSamplerOnPolicyRunner'
 dataset_name: 'afhqv2'
-afs: True
+afs: False
 desc: None
 m: 1
 nosubdir: False
@@ -15,18 +15,18 @@ device: 'cuda'
 empirical_normalization: False
 save_interval: 100
 
-
-
 model:
   guidance_type: None
   guidance_rate: None
   
 env:
   batch_size: 256
-  num_steps: 50
-  schedule_type: 'time_uniform'
-  schedule_rho: 1.0
-  reward_scale: 100
+  num_steps: 4
+  schedule_type: 'polynomial'
+  schedule_rho: 7
+  # reward_scale: 1
+  reward_type: 'mse'
+  reward_scale: 0.1
   
 policy:
   class_name: 'DiffSamplerActorCritic'
@@ -39,15 +39,12 @@ policy:
   embedding_type: 'positional'
   dataset_name: 'afhqv2'
   img_resolution: 64
-  num_steps: 1000
-  # sampler_tea: None
-  # sampler_stu: None
+  num_steps: 50
   M: None
   guidance_type: None
   guidance_rate: None
   schedule_type: None
   schedule_rho: None
-  afs: True
   scale_dir: 0.01
   scale_time: 0
   max_order: None

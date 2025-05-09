@@ -1,0 +1,1 @@
+torchrun --standalone --nproc_per_node=2 --master_port=11111 sample_rl.py --exp_dir='exps/2025-05-08/15-34-04-afhqv2-4' --seeds="0-49999"

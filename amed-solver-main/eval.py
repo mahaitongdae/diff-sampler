@@ -25,12 +25,12 @@ base = os.path.dirname(__file__)
 
 def eval():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--euler", type=bool, default=True)
-    parser.add_argument("--exp_dir", type=str, default='exps/2025-04-09/16-32-43-afhqv2')
+    parser.add_argument("--euler", type=bool, default=False)
+    parser.add_argument("--exp_dir", type=str, default='exps/2025-04-22/12-08-17-afhqv2-10')
     parser.add_argument("--exp_index", type=str, default='00000')
     parser.add_argument("--model_steps", type=str, default='49')
     parser.add_argument("--start_seed", type=int, default=0)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=64)
 
 
     args = parser.parse_args()
@@ -55,7 +55,7 @@ def eval():
     # For example:
     net = create_model(dataset_name=cfg.dataset_name, device=torch.device(cfg.device),
                         subsubdir='./src/')[0]
-    cfg.env.batch_size = 8
+    cfg.env.batch_size = args.batch_size
     env = DiffSamplingEnv(net=net,
                         dataset_name=cfg.dataset_name,
                         device=cfg.device,

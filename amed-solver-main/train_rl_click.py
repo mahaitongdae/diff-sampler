@@ -1,11 +1,19 @@
 import os
 import re
-import json
-import click
 import torch
 import dnnlib
 from torch_utils import distributed as dist
 from training import training_loop
+from agents.diff_sample_runner import DiffSamplerOnPolicyRunner
+from agents.config import get_args, class_to_dict
+from envs.diff_sampling_env import DiffSamplingEnv
+from sample import create_model
+import hydra
+from omegaconf import OmegaConf, DictConfig
+import logging
+from hydra.core.hydra_config import HydraConfig
+import click
+import json
 
 import warnings
 warnings.filterwarnings('ignore', 'Grad strides do not match bucket view strides') # False warning printed by PyTorch 1.12.
@@ -30,7 +38,7 @@ warnings.filterwarnings('ignore', 'Grad strides do not match bucket view strides
 @click.option('--guidance_rate',    help='Guidance rate', metavar='FLOAT',                             type=float, default=0.)
 @click.option('--schedule_type',    help='Time discretization schedule', metavar='STR',                type=click.Choice(['polynomial', 'logsnr', 'time_uniform', 'discrete']), default='polynomial', show_default=True)
 @click.option('--schedule_rho',     help='Time step exponent', metavar='FLOAT',                        type=click.FloatRange(min=0), default=7, show_default=True)
-@click.option('--afs',              help='Whether to use afs', metavar='BOOL',                         type=bool, default=True, show_default=True)
+@click.option('--afs',              help='Whether to use afs', metavar='BOOL',                         type=bool, default=False, show_default=False)
 @click.option('--scale_dir',        help='Scale the gradient by [1-scale_dir, 1+scale_dir]', metavar='FLOAT',     type=click.FloatRange(min=0), default=0.01, show_default=True)
 @click.option('--scale_time',       help='Scale the gradient by [1-scale_time, 1+scale_time]', metavar='FLOAT',   type=click.FloatRange(min=0), default=0, show_default=True)
 # Additional options for multi-step solvers, 1<=max_order<=4 for iPNDM, 1<=max_order<=3 for DPM-Solver++
@@ -40,9 +48,12 @@ warnings.filterwarnings('ignore', 'Grad strides do not match bucket view strides
 @click.option('--lower_order_final',help='Lower the order at final stages', metavar='BOOL',            type=bool, default=True)
 
 # Hyperparameters.
-@click.option('--batch',            help='Total batch size', metavar='INT',                            type=click.IntRange(min=1), default=128, show_default=True)
+@click.option('--batch',            help='Total batch size', metavar='INT',                            type=click.IntRange(min=1), default=512, show_default=True)
 @click.option('--batch-gpu',        help='Limit batch size per GPU', metavar='INT',                    type=click.IntRange(min=1))
 @click.option('--lr',               help='Learning rate', metavar='FLOAT',                             type=click.FloatRange(min=0, min_open=True), default=5e-3, show_default=True)
+
+# RL
+@click.option('--reward_scale',     help='Reward scale', metavar='FLOAT',                              type=click.FloatRange(min=0, min_open=True), default=1., show_default=True)
 
 # Performance-related.
 @click.option('--bench',            help='Enable cuDNN benchmarking', metavar='BOOL',                  type=bool, default=True, show_default=True)
@@ -56,25 +67,29 @@ warnings.filterwarnings('ignore', 'Grad strides do not match bucket view strides
 @click.option('--seed',             help='Random seed  [default: random]', metavar='INT',              type=int)
 @click.option('-n', '--dry-run',    help='Print training options and exit',                            is_flag=True)
 
+
 def main(**kwargs):
     opts = dnnlib.EasyDict(kwargs)
+    print(opts)
+    # return
     torch.multiprocessing.set_start_method('spawn')
     dist.init()
 
-    # Initialize config dict.
     c = dnnlib.EasyDict()
     c.loss_kwargs = dnnlib.EasyDict()
-    c.AMED_kwargs = dnnlib.EasyDict()
+    # c.AMED_kwargs = dnnlib.EasyDict()
     c.optimizer_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', lr=opts.lr, betas=[0.9,0.999], eps=1e-8)
+    c.env_kwargs = dnnlib.EasyDict(batch_size=opts.batch, num_steps=opts.num_steps, schedule_type=opts.schedule_type, schedule_rho= opts.schedule_rho,
+                                   reward_scale=opts.reward_scale)
 
-    # AMED predictor architecture.
-    c.AMED_kwargs.class_name = 'training.networks.AMED_predictor'
-    c.AMED_kwargs.update(num_steps=opts.num_steps, sampler_stu=opts.sampler_stu, sampler_tea=opts.sampler_tea, \
-                         M=opts.m, guidance_type=opts.guidance_type, guidance_rate=opts.guidance_rate, \
-                         schedule_rho=opts.schedule_rho, schedule_type=opts.schedule_type, afs=opts.afs, \
-                         dataset_name=opts.dataset_name, scale_dir=opts.scale_dir, scale_time=opts.scale_time, \
-                         max_order=opts.max_order, predict_x0=opts.predict_x0, lower_order_final=opts.lower_order_final)
-    c.loss_kwargs.class_name = 'training.loss.AMED_loss'
+    # # AMED predictor architecture.
+    # c.AMED_kwargs.class_name = 'training.networks.AMED_predictor'
+    # c.AMED_kwargs.update(num_steps=opts.num_steps, sampler_stu=opts.sampler_stu, sampler_tea=opts.sampler_tea, \
+    #                      M=opts.m, guidance_type=opts.guidance_type, guidance_rate=opts.guidance_rate, \
+    #                      schedule_rho=opts.schedule_rho, schedule_type=opts.schedule_type, afs=opts.afs, \
+    #                      dataset_name=opts.dataset_name, scale_dir=opts.scale_dir, scale_time=opts.scale_time, \
+    #                      max_order=opts.max_order, predict_x0=opts.predict_x0, lower_order_final=opts.lower_order_final)
+    # c.loss_kwargs.class_name = 'training.loss.AMED_loss'
 
     # Training options.
     c.total_kimg = opts.total_kimg      # Train for total_kimg k trajectories
@@ -86,38 +101,38 @@ def main(**kwargs):
     
     # Random seed.
     if opts.seed is not None:
-        c.seed = opts.seed
+        pass
     else:
         seed = torch.randint(1 << 31, size=[], device=torch.device('cuda'))
         torch.distributed.broadcast(seed, src=0)
-        c.seed = int(seed)
+        opts.seed = int(seed)
 
     # Description string.
-    if opts.schedule_type == 'polynomial':
-        schedule_str = 'poly' + str(opts.schedule_rho)
-    elif opts.schedule_type == 'logsnr':
+    if opts.env.schedule_type == 'polynomial':
+        schedule_str = 'poly' + str(opts.env.schedule_rho)
+    elif opts.env.schedule_type == 'logsnr':
         schedule_str = 'logsnr'
-    elif opts.schedule_type == 'time_uniform':
-        schedule_str = 'uni' + str(opts.schedule_rho)
-    elif opts.schedule_type == 'discrete':
+    elif opts.env.schedule_type == 'time_uniform':
+        schedule_str = 'uni' + str(opts.env.schedule_rho)
+    elif opts.env.schedule_type == 'discrete':
         schedule_str = 'discrete'
     else:
         raise ValueError("Got wrong schedule type: {}".format(opts.schedule_type))
     # Calculate required NFE
-    nfe = 2 * (opts.num_steps - 1) - 1 if opts.afs else 2 * (opts.num_steps - 1)
+    nfe = 2 * (opts.env.num_steps - 1) - 1 if opts.afs else 2 * (opts.env.num_steps - 1)
     nfe = 2 * nfe if opts.dataset_name == 'ms_coco' else nfe
     if opts.afs == True:
-        desc = f'{opts.dataset_name:s}-{opts.num_steps}-{nfe}-{opts.sampler_stu}-{opts.sampler_tea}-{opts.m}-{schedule_str}-afs'
+        desc = f'{opts.dataset_name:s}-{opts.env.num_steps}-{opts.m}-{schedule_str}-afs' # -{nfe}
     else:
-        desc = f'{opts.dataset_name:s}-{opts.num_steps}-{nfe}-{opts.sampler_stu}-{opts.sampler_tea}-{opts.m}-{schedule_str}'
-    if opts.desc is not None:
+        desc = f'{opts.dataset_name:s}-{opts.env.num_steps}-{opts.m}-{schedule_str}' # -{nfe}
+    if opts.desc != "None":
         desc += f'{opts.desc}'
 
     # Pick output directory.
     if dist.get_rank() != 0:
-        c.run_dir = None
+        opts.run_dir = None
     elif opts.nosubdir:
-        c.run_dir = opts.outdir
+        opts.run_dir = opts.outdir
     else:
         prev_run_dirs = []
         if os.path.isdir(opts.outdir):
@@ -125,17 +140,21 @@ def main(**kwargs):
         prev_run_ids = [re.match(r'^\d+', x) for x in prev_run_dirs]
         prev_run_ids = [int(x.group()) for x in prev_run_ids if x is not None]
         cur_run_id = max(prev_run_ids, default=-1) + 1
-        c.run_dir = os.path.join(opts.outdir, f'{cur_run_id:05d}-{desc}')
-        assert not os.path.exists(c.run_dir)
+        run_dir = os.path.join('./', f'{cur_run_id:05d}-{desc}')
+        assert not os.path.exists(run_dir)
 
+    model_dir = os.path.join(hydra.utils.get_original_cwd(),
+                                              'src')
     # Print options.
     dist.print0()
     dist.print0('Training options:')
-    dist.print0(json.dumps(c, indent=2))
+    dist.print0(opts)
     dist.print0()
-    dist.print0(f'Output directory:        {c.run_dir}')
+    dist.print0(f'Cwd:                     {os.getcwd()}')
+    dist.print0(f'Output directory:        {os.path.abspath(run_dir)}')
+    dist.print0(f'Model directory:         {model_dir}')
     dist.print0(f'Number of GPUs:          {dist.get_world_size()}')
-    dist.print0(f'Batch size:              {c.batch_size}')
+    dist.print0(f'Batch size:              {opts.env.batch_size}')
     dist.print0()
 
     # Dry run?
@@ -146,13 +165,28 @@ def main(**kwargs):
     # Create output directory.
     dist.print0('Creating output directory...')
     if dist.get_rank() == 0:
-        os.makedirs(c.run_dir, exist_ok=True)
+        os.makedirs(opts.run_dir, exist_ok=True)
         with open(os.path.join(c.run_dir, 'training_options.json'), 'wt') as f:
-            json.dump(c, f, indent=2)
-        dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
+            json.dump(opts, f, indent=2)
+        dnnlib.util.Logger(file_name=os.path.join(opts.run_dir, 'log.txt'), file_mode='a', should_flush=True)
 
     # Train.
-    training_loop.training_loop(**c)
+
+    # Load pre-trained denoising network.
+    net = create_model(dataset_name=opts.dataset_name, device=torch.device(opts.device),
+                       subsubdir=model_dir)[0]
+    env = DiffSamplingEnv(net=net,
+                          dataset_name=opts.dataset_name,
+                          device=opts.device,
+                          **class_to_dict(c.env_kwargs)
+                          )
+    Runner = eval(opts.runner_class_name)
+    ppo_runner = DiffSamplerOnPolicyRunner(env=env,
+                        train_cfg=opts,
+                        device=opts.device,
+                        log_dir=run_dir,)
+    ppo_runner.learn(num_learning_iterations=opts.runner.max_iterations)
+
 
 #----------------------------------------------------------------------------
 

@@ -272,8 +272,8 @@ class DiffSamplerOnPolicyRunner:
         if self.logger_type in ["neptune", "wandb"]:
             self.writer.save_model(path, self.current_learning_iteration)
 
-    def load(self, path, load_optimizer=True):
-        loaded_dict = torch.load(path)
+    def load(self, path, device, load_optimizer=True):
+        loaded_dict = torch.load(path, map_location=device)
         self.alg.actor_critic.load_state_dict(loaded_dict["model_state_dict"])
         if self.empirical_normalization:
             self.obs_normalizer.load_state_dict(loaded_dict["obs_norm_state_dict"])

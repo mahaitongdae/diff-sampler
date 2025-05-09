@@ -13,7 +13,13 @@ from torch_utils import distributed as dist
 from torchvision.utils import make_grid, save_image
 from torch_utils.download_util import check_file_by_key
 import solvers_amed
-# import solvers_rl
+import solvers_rl
+from omegaconf import OmegaConf
+from agents.config import get_args, class_to_dict
+from envs.diff_sampling_env import DiffSamplingEnv
+from agents.diff_sample_runner import DiffSamplerOnPolicyRunner
+
+base = os.path.dirname(__file__)
 
 #----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
@@ -120,7 +126,7 @@ def create_model(dataset_name=None, guidance_type=None, guidance_rate=None, devi
 
 @click.command()
 # General options
-@click.option('--predictor_path',          help='Path to trained AMED instructor', metavar='DIR',                   type=str, required=True, default='00001')
+@click.option('--exp_dir',                 help='Path to trained rl exp', metavar='DIR',                            type=str, required=True, default='00001')
 @click.option('--model_path',              help='Network filepath', metavar='PATH|URL',                             type=str)
 @click.option('--batch', 'max_batch_size', help='Maximum batch size', metavar='INT',                                type=click.IntRange(min=1), default=64, show_default=True)
 @click.option('--seeds',                   help='Random seeds (e.g. 1,2,5-10)', metavar='LIST',                     type=parse_int_list, default='0-63', show_default=True)
@@ -135,7 +141,7 @@ def create_model(dataset_name=None, guidance_type=None, guidance_rate=None, devi
 @click.option('--grid',                    help='Whether to make grid',                                             type=bool, default=False)
 @click.option('--subdirs',                 help='Create subdirectory for every 1000 seeds',                         type=bool, default=True, is_flag=True)
 
-def main(predictor_path, max_batch_size, seeds, grid, outdir, subdirs, device=torch.device('cuda'), **solver_kwargs):
+def main(exp_dir, max_batch_size, seeds, grid, outdir, subdirs, device=torch.device('cuda'), **solver_kwargs):
 
     dist.init()
     num_batches = ((len(seeds) - 1) // (max_batch_size * dist.get_world_size()) + 1) * dist.get_world_size()
@@ -146,48 +152,76 @@ def main(predictor_path, max_batch_size, seeds, grid, outdir, subdirs, device=to
     if dist.get_rank() != 0:
         torch.distributed.barrier()     # rank 0 goes first
 
-    # Load AMED predictor
-    if not predictor_path.endswith('pkl'):      # load by experiment number
-        # find the directory with trained AMED predictor
-        predictor_path_str = '0' * (5 - len(predictor_path)) + predictor_path
-        for file_name in os.listdir("./exps"):
-            if file_name.split('-')[0] == predictor_path_str:
-                file_list = [f for f in os.listdir(os.path.join('./exps', file_name)) if f.endswith("pkl")]
-                max_index = -1
-                max_file = None
-                for ckpt_name in file_list:
-                    file_index = int(ckpt_name.split("-")[-1].split(".")[0])
-                    if file_index > max_index:
-                        max_index = file_index
-                        max_file = ckpt_name
-                predictor_path = os.path.join('./exps', file_name, max_file)
-                break
-    dist.print0(f'Loading AMED predictor from "{predictor_path}"...')
-    with dnnlib.util.open_url(predictor_path, verbose=(dist.get_rank() == 0)) as f:
-        AMED_predictor = pickle.load(f)['model'].to(device)
+    # # Load AMED predictor
+    # if not predictor_path.endswith('pkl'):      # load by experiment number
+    #     # find the directory with trained AMED predictor
+    #     predictor_path_str = '0' * (5 - len(predictor_path)) + predictor_path
+    #     for file_name in os.listdir("./exps"):
+    #         if file_name.split('-')[0] == predictor_path_str:
+    #             file_list = [f for f in os.listdir(os.path.join('./exps', file_name)) if f.endswith("pkl")]
+    #             max_index = -1
+    #             max_file = None
+    #             for ckpt_name in file_list:
+    #                 file_index = int(ckpt_name.split("-")[-1].split(".")[0])
+    #                 if file_index > max_index:
+    #                     max_index = file_index
+    #                     max_file = ckpt_name
+    #             predictor_path = os.path.join('./exps', file_name, max_file)
+    #             break
+    # dist.print0(f'Loading AMED predictor from "{predictor_path}"...')
+    # with dnnlib.util.open_url(predictor_path, verbose=(dist.get_rank() == 0)) as f:
+    #     AMED_predictor = pickle.load(f)['model'].to(device)
+        
+    # 2. Load config
+    hydra_config_path = f"{exp_dir}/.hydra/config.yaml"
+    cfg = OmegaConf.load(hydra_config_path)
+
+    exp_dir = f"{base}/{exp_dir}"
+
+    hydra_config_path = f"{exp_dir}/.hydra/config.yaml"
+    for dir in os.listdir(exp_dir):
+        if dir.startswith('00000'):
+            model_dir = f"{exp_dir}/{dir}"
+    model_path = f"{model_dir}/model_49.pt"
+    
+    
     
     # Update settings
     prompt = solver_kwargs['prompt']
     solver_kwargs = {key: value for key, value in solver_kwargs.items() if value is not None}
-    solver_kwargs['AMED_predictor'] = AMED_predictor
-    solver_kwargs['solver'] = solver = AMED_predictor.sampler_stu
-    solver_kwargs['num_steps'] = AMED_predictor.num_steps
-    solver_kwargs['guidance_type'] = AMED_predictor.guidance_type
-    solver_kwargs['guidance_rate'] = AMED_predictor.guidance_rate
-    solver_kwargs['afs'] = AMED_predictor.afs
+    
+    solver_kwargs['solver'] = solver = 'rl'
+    solver_kwargs['num_steps'] = cfg.env.num_steps
+    solver_kwargs['guidance_type'] = cfg.model.guidance_type
+    solver_kwargs['guidance_rate'] = cfg.model.guidance_rate
+    solver_kwargs['afs'] = cfg.afs
     solver_kwargs['denoise_to_zero'] = False
-    solver_kwargs['max_order'] = AMED_predictor.max_order
-    solver_kwargs['predict_x0'] = AMED_predictor.predict_x0
-    solver_kwargs['lower_order_final'] = AMED_predictor.lower_order_final
-    solver_kwargs['schedule_type'] = AMED_predictor.schedule_type
-    solver_kwargs['schedule_rho'] = AMED_predictor.schedule_rho
+    solver_kwargs['max_order'] = cfg.policy.max_order
+    solver_kwargs['predict_x0'] = cfg.policy.predict_x0
+    solver_kwargs['lower_order_final'] = cfg.policy.lower_order_final
+    solver_kwargs['schedule_type'] = cfg.env.schedule_type
+    solver_kwargs['schedule_rho'] = cfg.env.schedule_rho
     solver_kwargs['prompt'] = prompt
 
-    solver_kwargs['dataset_name'] = dataset_name = AMED_predictor.dataset_name
+    solver_kwargs['dataset_name'] = dataset_name = cfg.dataset_name
     # Load pre-trained diffusion models.
     net, solver_kwargs['model_source'] = create_model(dataset_name, solver_kwargs['guidance_type'], solver_kwargs['guidance_rate'], device)
     # TODO: support mixed precision 
     # net.use_fp16 = solver_kwargs['use_fp16']
+    
+    env = DiffSamplingEnv(net=net,
+                        dataset_name=cfg.dataset_name,
+                        device=device,
+                        # batch_size=8,
+                        **class_to_dict(cfg.env)
+                        )
+    
+    ppo_runner = DiffSamplerOnPolicyRunner(env=env,
+                        train_cfg=cfg,
+                        device=device,
+                        log_dir=exp_dir,)
+    ppo_runner.load(model_path, device=device)
+    solver_kwargs['rl_runner'] = ppo_runner
 
     # Other ranks follow.
     if dist.get_rank() == 0:
@@ -213,16 +247,8 @@ def main(predictor_path, max_batch_size, seeds, grid, outdir, subdirs, device=to
                 sample_captions.append(text)
 
     # Construct solver, 5 solvers are provided
-    if solver == 'amed':
-        sampler_fn = solvers_amed.amed_sampler
-    elif solver == 'euler':
-        sampler_fn = solvers_amed.euler_sampler
-    elif solver == 'dpm':
-        sampler_fn = solvers_amed.dpm_2_sampler
-    elif solver == 'ipndm':
-        sampler_fn = solvers_amed.ipndm_sampler
-    elif solver == 'dpmpp':
-        sampler_fn = solvers_amed.dpm_pp_sampler
+    sampler_fn = solvers_rl.rl_sampler
+        
     
     # Print solver settings.
     dist.print0("Solver settings:")
@@ -242,9 +268,9 @@ def main(predictor_path, max_batch_size, seeds, grid, outdir, subdirs, device=to
     # Loop over batches.
     if outdir is None:
         if grid:
-            outdir = os.path.join(f"./samples/grids/{dataset_name}", f"{solver}_nfe{nfe}")
+            outdir = os.path.join(f"./rl_samples/grids/{dataset_name}", f"{solver}_nfe{nfe}")
         else:
-            outdir = os.path.join(f"./samples/{dataset_name}", f"{solver}_nfe{nfe}")
+            outdir = os.path.join(f"./rl_samples/{dataset_name}", f"{solver}_nfe{nfe}")
     dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
     for batch_seeds in tqdm.tqdm(rank_batches, unit='batch', disable=(dist.get_rank() != 0)):
         torch.distributed.barrier()
@@ -280,7 +306,7 @@ def main(predictor_path, max_batch_size, seeds, grid, outdir, subdirs, device=to
                         images = sampler_fn(net, latents, condition=c, unconditional_condition=uc, **solver_kwargs)
                         images = net.model.decode_first_stage(images)
             else:
-                images = sampler_fn(net, latents, class_labels=class_labels, **solver_kwargs)
+                images = solvers_rl.rl_sampler(net, latents, cfg, device, class_labels=class_labels, **solver_kwargs)
 
         # Save images.
         if grid:

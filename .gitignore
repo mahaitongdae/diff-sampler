@@ -7,3 +7,5 @@ test/
 *.py[cod]
 .DS_Store
 */exps/
+**/rl_samples/
+**.idea/

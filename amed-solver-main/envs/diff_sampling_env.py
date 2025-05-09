@@ -120,7 +120,8 @@ class DiffSamplingEnv(object):
                  schedule_rho,
                  outdir=None,
                  device='cuda',
-                 reward_scale=100,
+                 reward_scale=0.1,
+                 reward_type='mse',
                  **kwargs):
         # Pick latents and labels.
         self.device = torch.device(device)
@@ -138,6 +139,9 @@ class DiffSamplingEnv(object):
                                     schedule_rho=schedule_rho,
                                     net=net,
                                     device=self.device)
+        self.schedule_type = schedule_type
+        self.schedule_rho = schedule_rho
+        self.reward_type = reward_type
         """
         Besides, for AMED-Solver on CIFAR10 32×32 [21], 
         FFHQ 64×64 [17] and ImageNet 64×64 [37],
@@ -152,7 +156,7 @@ class DiffSamplingEnv(object):
 
     def reset(self, batch_seeds = None):
         if batch_seeds is None:
-            batch_seeds = torch.arange(16, self.batch_size + 16)
+            batch_seeds = torch.randint(0, 49999, [self.batch_size,])
         self.rnd = StackedRandomGenerator(self.device, batch_seeds)
         self.latents = self.rnd.randn([self.batch_size,
                                        self.net.img_channels,
@@ -167,6 +171,20 @@ class DiffSamplingEnv(object):
         self.sum_of_square = None
 
         # Get UNet enc out as observations.
+        unet_enc_out, hook = init_hook(self.net, self.class_labels)
+        _ = get_denoised(self.net, self.x, self.t_steps[0],
+                                class_labels=self.class_labels,
+                                condition=self.c,
+                                unconditional_condition=self.uc)
+        hook.remove()
+        self.observation = torch.mean(unet_enc_out[-1], dim=1)
+        return self.get_observations()[0], {}
+    
+    def force_reset(self, latent, c=None, uc=None, class_labels=None):
+        self.latents = latent
+        self.c = c
+        self.uc = uc
+        self.class_labels = class_labels
         unet_enc_out, hook = init_hook(self.net, self.class_labels)
         _ = get_denoised(self.net, self.x, self.t_steps[0],
                                 class_labels=self.class_labels,
@@ -192,12 +210,12 @@ class DiffSamplingEnv(object):
         """
         preprocess actions. Usually the actions are between [-1, 1],
         while we reshape it to 
-        r: [0, 1]
-        scale_dir: [0.8, 1.2]
+        r: [0.24, 0.36]
+        scale_dir: [0.997, 1.003]
         """
         raw_r, raw_scale_dir = action[:, 0], action[:, 1]
-        r = 0.5 * (raw_r + 1.)
-        scale_dir = 1. + 0.2 * raw_scale_dir
+        r = 0.24 + 0.06 * (raw_r + 1.)
+        scale_dir = 1. + 0.003 * raw_scale_dir
         return r, scale_dir
         
 
@@ -238,13 +256,24 @@ class DiffSamplingEnv(object):
 
 
         # rewards = self.get_rewards_variance(denoised)
-        rewards = -1. * torch.linalg.norm(d_cur, dim=1).mean(dim=(1, 2)) # [batch_size, channel, resolution, resolution]
+        if self.reward_type == 'norm':
+            rewards = self.get_rewards_norm(d_cur)
+        elif self.reward_type == 'mse':
+            if self.current_step != len(self.t_steps) - 2: 
+                rewards = torch.zeros([self.batch_size, ], device=self.device) 
+            else:
+                ref = self.sample_via_sample_fn(20)
+                rewards = self.reward_scale * -1. * torch.sum((ref - x_next) ** 2, dim=(1, 2, 3))
+        
         # rewards = torch.linalg.norm(d_mid, dim)
         dones = self.get_dones()
         obs = self.get_observations()[0]
         self.current_step += 1
 
         return obs, rewards, dones, {"observations": {}}
+    
+    def get_rewards_norm(self, d_cur):
+        rewards = -1. * torch.linalg.norm(d_cur, dim=1).mean(dim=(1, 2)) # [batch_size, channel, resolution, resolution]
 
     def step_euler(self):
         t_cur = self.t_steps[self.current_step]
@@ -342,10 +371,13 @@ class DiffSamplingEnv(object):
     def get_current_image(self):
         return self.x
 
-    def sample_via_sample_fn(self,):
+    def sample_via_sample_fn(self, num_steps):
         from solvers_amed import euler_sampler
-        img = euler_sampler(self.net, self.latents, self.class_labels, num_steps=1000, schedule_type='time_uniform',
-                        schedule_rho=1.0)
+        # img = euler_sampler(self.net, self.latents, self.class_labels, num_steps=1000, schedule_type='time_uniform',
+        #                 schedule_rho=1.0)
+        print(f"generating using euler {num_steps} steps")
+        img = euler_sampler(self.net, self.latents, self.class_labels, num_steps=num_steps, schedule_type=self.schedule_type,
+                        schedule_rho=self.schedule_rho)
         return img
 
 
@@ -358,15 +390,15 @@ if __name__ == '__main__':
     from matplotlib import pyplot as plt
     from tqdm import tqdm
     from torch_utils.visualize_rewards import draw_indices_on_images
-    model_path, classifier_path = check_file_by_key('afhqv2', subsubdir='../src')
+    model_path, classifier_path = check_file_by_key('afhqv2', subsubdir='./src')
     with dnnlib.util.open_url(model_path) as f:
-        net = pickle.load(f)['ema'].to(torch.device('cuda'))
+        net = pickle.load(f)['ema'].to(torch.device('cuda:1'))
     net.sigma_min = 0.002
     net.sigma_max = 80.0
     batch_size = 16
     num_steps = 25
     env = DiffSamplingEnv(
-        device=torch.device('cuda'),
+        device=torch.device('cuda:1'),
         batch_seeds=1,
         dataset_name='afhqv2',
         batch_size=batch_size,
@@ -380,7 +412,8 @@ if __name__ == '__main__':
     done = False
     rs = []
     for i in tqdm(range(num_steps - 1)):
-        enc_out, r, done, _ = env.step(torch.zeros((batch_size, 2), device=torch.device('cuda')))
+        enc_out, r, done, _ = env.step(torch.zeros((batch_size, 2), device=torch.device('cuda:1')))
+        print(r.cpu().numpy())
         rs.append(r.cpu().numpy())
     print(env.current_step, done)
     rs = np.array(rs).sum(axis=0)
