@@ -182,7 +182,7 @@ def main(exp_dir, max_batch_size, seeds, grid, outdir, subdirs, device=torch.dev
     for dir in os.listdir(exp_dir):
         if dir.startswith('00000'):
             model_dir = f"{exp_dir}/{dir}"
-    model_path = f"{model_dir}/model_49.pt"
+    model_path = f"{model_dir}/model_0.pt"
     
     
     

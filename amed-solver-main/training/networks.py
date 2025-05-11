@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from torch_utils import persistence
-from torch.nn.functional import silu
+from torch.nn.functional import silu, elu
 
 #----------------------------------------------------------------------------
 # Unified routine for initializing weights and biases.
@@ -205,7 +205,7 @@ class AMEDPredictorWithValue(AMED_predictor):
             predict_x0=predict_x0,
             lower_order_final=lower_order_final,)
 
-        self.fc_value = Linear(2 * noise_channels + bottleneck_output_dim, output_dim)
+        self.fc_value = Linear(2 * noise_channels + bottleneck_output_dim, 1)
 
 
     def forward(self, unet_bottleneck, t_cur, t_next, class_labels = None):
@@ -229,7 +229,7 @@ class AMEDPredictorWithValue(AMED_predictor):
 
 
         value = self.fc_value(out)
-        value = silu(value)
+        # value = elu(value)
         # Todo: now the value function should be non-negative.
         #  variance-based rewards should be fine, but other reward should be careful.
 

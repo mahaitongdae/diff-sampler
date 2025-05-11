@@ -133,4 +133,113 @@ class DiffSamplerActorCritic(nn.Module):
         t_cur = obs[0, -2]
         t_next = obs[0, -1]
         return unet_bottleneck, t_cur, t_next
+    
+from torch.nn.functional import log_softmax, softmax
+from torch.distributions import Categorical
+
+
+class DiffSamplerActorCriticDiscrete(DiffSamplerActorCritic):
+
+    def __init__(
+            self,
+            hidden_dim=128,
+            output_dim=2,  # 2 actions for discrete case
+            bottleneck_input_dim=64,
+            bottleneck_output_dim=4,
+            noise_channels=8,
+            embedding_type='positional',
+            dataset_name=None,
+            img_resolution=None,
+            num_steps=None,
+            sampler_tea=None,
+            sampler_stu=None,
+            M=None,
+            guidance_type=None,
+            guidance_rate=None,
+            schedule_type=None,
+            schedule_rho=None,
+            afs=False,
+            scale_dir=0,
+            scale_time=0,
+            max_order=None,
+            predict_x0=True,
+            lower_order_final=True,
+            **kwargs
+    ):
+        super(DiffSamplerActorCritic, self).__init__()
+        self.shared_network = AMEDPredictorWithValue(
+            hidden_dim=hidden_dim,
+            output_dim=output_dim,  # logits for 2 actions
+            bottleneck_input_dim=bottleneck_input_dim,
+            bottleneck_output_dim=bottleneck_output_dim,
+            noise_channels=noise_channels,
+            embedding_type=embedding_type,
+            dataset_name=dataset_name,
+            img_resolution=img_resolution,
+            num_steps=num_steps,
+            sampler_tea=sampler_tea,
+            sampler_stu=sampler_stu,
+            M=M,
+            guidance_type=guidance_type,
+            guidance_rate=guidance_rate,
+            schedule_type=schedule_type,
+            schedule_rho=schedule_rho,
+            afs=afs,
+            scale_dir=scale_dir,
+            scale_time=scale_time,
+            max_order=max_order,
+            predict_x0=predict_x0,
+            lower_order_final=lower_order_final,
+        )
+        self.is_recurrent = False
+
+    def reset(self, dones=None):
+        pass
+
+    def forward(self):
+        raise NotImplementedError
+    
+    @property
+    def action_mean(self):
+        return self.mean
+
+    @property
+    def action_std(self):
+        return self.std
+
+    def update_distribution(self, obs, t_cur, t_next):
+        logits, _ = self.shared_network(obs, t_cur, t_next)
+        self.distribution = Categorical(logits=logits)
+
+    def act(self, observations, **kwargs):
+        x, t_cur, t_next = self.decompose_obs(observations)
+        logits, _ = self.shared_network(x, t_cur, t_next)
+        self.distribution = Categorical(logits=logits)
+        self.mean = torch.zeros([logits.shape[0], 1], device=logits.device)
+        self.std = torch.ones([logits.shape[0],1], device=logits.device)
+        actions = self.distribution.sample().unsqueeze(1)
+        return actions
+
+    def get_actions_log_prob(self, actions):
+        if len(actions.shape) == 2:
+            actions = actions.squeeze()
+        return self.distribution.log_prob(actions).unsqueeze(1)
+
+    def act_inference(self, observations):
+        x, t_cur, t_next = self.decompose_obs(observations)
+        logits, _ = self.shared_network(x, t_cur, t_next)
+        probs = softmax(logits, dim=-1)
+        return torch.argmax(probs, dim=-1)
+
+    def evaluate(self, critic_observations, **kwargs):
+        x, t_cur, t_next = self.decompose_obs(critic_observations)
+        _, value = self.shared_network(x, t_cur, t_next)
+        return value
+
+    def decompose_obs(self, obs):
+        unet_bottleneck = obs[:, :-2]
+        t_cur = obs[0, -2]
+        t_next = obs[0, -1]
+        return unet_bottleneck, t_cur, t_next
+
 

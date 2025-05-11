@@ -23,17 +23,17 @@ model:
   
 env:
   batch_size: 256
-  num_steps: 5
+  num_steps: 10
   schedule_type: 'polynomial'
   schedule_rho: 7
   # reward_scale: 1
-  reward_type: 'mse'
-  reward_scale: 0.01
-  reward_scale_terminal: 0.01
+  reward_type: 'variance'
+  reward_scale: 0.1
+  reward_scale_terminal: 0.1
   scale_dir: 0.01
   r_range:
-    low: 0.1
-    high: 0.5
+    low: 0.2
+    high: 0.4
   
 policy:
   class_name: 'DiffSamplerActorCritic'
@@ -52,7 +52,7 @@ policy:
   guidance_rate: None
   schedule_type: None
   schedule_rho: None
-  scale_dir: 0.01
+  scale_dir: 0
   scale_time: 0
   max_order: None
   predict_x0: True

@@ -15,7 +15,7 @@ from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
 from rsl_rl.utils import store_code_state
-from agents.rl_agent import DiffSamplerActorCritic
+from agents.rl_agent import DiffSamplerActorCritic, DiffSamplerActorCriticDiscrete
 
 
 class DiffSamplerOnPolicyRunner:
@@ -34,7 +34,7 @@ class DiffSamplerOnPolicyRunner:
         else:
             num_critic_obs = num_obs
         actor_critic_class = eval(self.policy_cfg.class_name)  # ActorCritic
-        actor_critic: DiffSamplerActorCritic = actor_critic_class(
+        actor_critic = actor_critic_class(
             **self.policy_cfg
         ).to(self.device)
         alg_class = eval(self.cfg.runner.alg_class_name)  # PPO
@@ -81,7 +81,7 @@ class DiffSamplerOnPolicyRunner:
                 from rsl_rl.utils.wandb_utils import WandbSummaryWriter
 
                 self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
-                self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
+                self.writer.log_config(self.cfg)
             elif self.logger_type == "tensorboard":
                 self.writer = TensorboardSummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
@@ -105,6 +105,8 @@ class DiffSamplerOnPolicyRunner:
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
+            cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+            cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -137,12 +139,17 @@ class DiffSamplerOnPolicyRunner:
                         elif "log" in infos:
                             ep_infos.append(infos["log"])
                         cur_reward_sum += rewards
-                        cur_episode_length += 1
+                        cur_episode_length = cur_episode_length + (1 - dones.float())
                         new_ids = (dones > 0).nonzero(as_tuple=False)
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                        cur_reward_sum[new_ids] = 0
-                        cur_episode_length[new_ids] = 0
+                        # cur_reward_sum[new_ids] = 0
+                        # cur_episode_length[new_ids] = 0
+                        
+                    # print(self.env.current_step, dones)
+                    
+                    if torch.all(dones):
+                        break
 
                 stop = time.time()
                 collection_time = stop - start

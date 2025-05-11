@@ -7,6 +7,7 @@ from training import training_loop
 from agents.diff_sample_runner import DiffSamplerOnPolicyRunner
 from agents.config import get_args, class_to_dict
 from envs.diff_sampling_env import DiffSamplingEnv
+from envs.diff_sampling_env_step import DiffSamplingEnvStep
 from sample import create_model
 import hydra
 from omegaconf import OmegaConf, DictConfig
@@ -62,7 +63,7 @@ warnings.filterwarnings('ignore', 'Grad strides do not match bucket view strides
 # @click.option('--seed',             help='Random seed  [default: random]', metavar='INT',              type=int)
 # @click.option('-n', '--dry-run',    help='Print training options and exit',                            is_flag=True)
 
-@hydra.main(config_path='conf', config_name='edm_afhq2.yaml')
+@hydra.main(config_path='conf', config_name='edm_step_afhq2.yaml')
 def main(cfg):
     OmegaConf.resolve(cfg)
     print(cfg)
@@ -170,7 +171,7 @@ def main(cfg):
     # Load pre-trained denoising network.
     net = create_model(dataset_name=cfg.dataset_name, device=torch.device(cfg.device),
                        subsubdir=model_dir)[0]
-    env = DiffSamplingEnv(net=net,
+    env = DiffSamplingEnvStep(net=net,
                           dataset_name=cfg.dataset_name,
                           device=cfg.device,
                           **class_to_dict(cfg.env)

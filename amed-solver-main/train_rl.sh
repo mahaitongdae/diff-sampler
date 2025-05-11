@@ -1,1 +1,1 @@
-python train_rl.py device=cuda:1
+python train_rl.py device=cuda:1 env.reward_type=joint env.r_range.low=0.1 env.r_range.high=0.5 env.num_steps=10

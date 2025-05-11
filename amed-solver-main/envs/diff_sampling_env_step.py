@@ -11,6 +11,7 @@ from solver_utils import *
 from solvers_amed import get_denoised, init_hook, get_amed_prediction
 from sample import StackedRandomGenerator
 import torch
+from torch.distributions import Categorical
 
 def amed_sampler(
         net,
@@ -109,7 +110,7 @@ def amed_sampler(
         return x_next, [], [], r, scale_dir, scale_time
     return x_next
 
-class DiffSamplingEnv(object):
+class DiffSamplingEnvStep(object):
 
     def __init__(self,
                  net,
@@ -171,7 +172,7 @@ class DiffSamplingEnv(object):
                             device=self.device)
         self.x = self.latents.clone() * self.t_steps[0]
         class_labels = c = uc = None
-        self.current_step = 0
+        self.current_step = torch.zeros([self.batch_size,], device=self.device).int()
         self.class_labels, self.c, self.uc = self.__reset_class_labels(batch_seeds)
         self.traj_mean = None
         self.sum_of_square = None
@@ -183,11 +184,14 @@ class DiffSamplingEnv(object):
                                 condition=self.c,
                                 unconditional_condition=self.uc)
         hook.remove()
+        # self.ref = self.sample_via_sample_fn(20)
+        # self.ref = self.sample_via_heun(len(self.t_steps))
         self.observation = torch.mean(unet_enc_out[-1], dim=1)
         return self.get_observations()[0], {}
     
     def force_reset(self, latent, c=None, uc=None, class_labels=None):
         self.latents = latent
+        # self.ref = self.sample_via_sample_fn(20)
         self.c = c
         self.uc = uc
         self.class_labels = class_labels
@@ -204,9 +208,9 @@ class DiffSamplingEnv(object):
 
         if self.observation is not None and self.x is not None:
             flatten_obs = self.observation.reshape(self.batch_size, -1)
-            t_cur = self.t_steps[self.current_step] * torch.ones([self.batch_size, 1]).to(self.device)
-            t_next = self.t_steps[self.current_step + 1] * torch.ones([self.batch_size, 1]).to(self.device)
-            whole_obs = torch.cat([flatten_obs, t_cur, t_next], dim=1)
+            t_cur = self.t_steps[self.current_step].unsqueeze(1) #  * torch.ones([self.batch_size, 1]).to(self.device)
+            # t_next = self.t_steps[self.current_step + 1] #  * torch.ones([self.batch_size, 1]).to(self.device)
+            whole_obs = torch.cat([flatten_obs, t_cur, t_cur], dim=1) # , t_next
             return (whole_obs,
                     {'observations':{'critic': whole_obs}})
         else:
@@ -216,29 +220,23 @@ class DiffSamplingEnv(object):
         """
         preprocess actions. Usually the actions are between [-1, 1],
         while we reshape it to 
-        r: [0.24, 0.36]
-        scale_dir: [0.997, 1.003]
         """
-        raw_r, raw_scale_dir = action[:, 0], action[:, 1]
-        # r = self.r_range['low'] + (self.r_range['high'] - self.r_range['high']) * (raw_r + 1.) / 2
-        # scale_dir = 1. + self.scale_dir * raw_scale_dir
-        # r = 0.24 + 0.06 * (raw_r + 1.)
-        # scale_dir = 1. + 0.003 * raw_scale_dir
-        # r = 0.2 + 0.1 * (raw_r + 1.)
-        # scale_dir = 1. + 0.006 * raw_scale_dir
-        r = 0.5 * (raw_r + 1.)
-        scale_dir = 1. + 0.2 * raw_scale_dir
-        return r, scale_dir
+        return torch.argmax(action, dim=1)
         
 
 
     def step(self, action):
-        r, scale_dir = self.preprocess_action(action)
-        r = r.reshape(-1, 1, 1, 1)
-        scale_dir = scale_dir.reshape(-1, 1, 1, 1)
-        scale_time = torch.ones_like(scale_dir, device=self.device)
+        action = self.preprocess_action(action)
+        # r = r.reshape(-1, 1, 1, 1)
+        # scale_dir = scale_dir.reshape(-1, 1, 1, 1)
+        # scale_time = torch.ones_like(scale_dir, device=self.device)
+        action = action.squeeze()
         t_cur = self.t_steps[self.current_step]
-        t_next = self.t_steps[self.current_step + 1]
+        next_step = self.current_step + action + 1
+        next_step = torch.clip(next_step, 0, len(self.t_steps) - 1)
+        dones = next_step == len(self.t_steps) - 1
+        dones_mask = dones.float().reshape(-1, 1, 1, 1)
+        t_next = self.t_steps[next_step]
         x_cur = self.x
         unet_enc_out, hook = init_hook(self.net, self.class_labels)
 
@@ -247,48 +245,49 @@ class DiffSamplingEnv(object):
                                 class_labels=self.class_labels,
                                 condition=self.c,
                                 unconditional_condition=self.uc)
-
+        t_cur = t_cur.reshape(-1, 1, 1, 1)
         d_cur = (x_cur - denoised) / t_cur
         hook.remove()
         self.observation = torch.mean(unet_enc_out[-1], dim=1)
-        t_cur = t_cur.reshape(-1, 1, 1, 1)
+        
         t_next = t_next.reshape(-1, 1, 1, 1)
 
-        t_mid = (t_next ** r) * (t_cur ** (1 - r))
+        t_mid = (t_next ** 0.5) * (t_cur ** (1 - 0.5))
         x_next = x_cur + (t_mid - t_cur) * d_cur
 
         # Apply 2nd order correction.
-        denoised = get_denoised(self.net, x_next, scale_time * t_mid,
+        denoised = get_denoised(self.net, x_next, t_mid,
                                 class_labels=self.class_labels,
                                 condition=self.c,
                                 unconditional_condition=self.uc)
         d_mid = (x_next - denoised) / t_mid
-        x_next = x_cur + scale_dir * (t_next - t_cur) * d_mid
+        x_next = x_cur + (1 - dones_mask) * (t_next - t_cur) * d_mid
         self.x = x_next
 
 
         # rewards = self.get_rewards_variance(denoised)
-        if self.reward_type == 'norm':
-            rewards = self.get_rewards_norm(d_cur)
-        elif self.reward_type == 'variance':
-            rewards = self.get_rewards_variance(d_cur)
-        elif self.reward_type == 'mse':
-            if self.current_step != len(self.t_steps) - 2: 
-                rewards = torch.zeros([self.batch_size, ], device=self.device) 
-            else:
-                ref = self.sample_via_sample_fn(20)
-                rewards = self.reward_scale * -1. * torch.sum((ref - x_next) ** 2, dim=(1, 2, 3))
-        elif self.reward_type == 'joint':
-            if self.current_step != len(self.t_steps) - 2: 
-                rewards = self.reward_scale * self.get_rewards_norm(d_cur)
-            else:
-                ref = self.sample_via_sample_fn(20)
-                rewards = self.reward_scale_terminal * -1. * torch.sum((ref - x_next) ** 2, dim=(1, 2, 3))
+        # if self.reward_type == 'norm':
+        #     rewards = self.get_rewards_norm(d_cur)
+        # elif self.reward_type == 'variance':
+        #     rewards = self.get_rewards_variance(d_cur)
+        # if self.reward_type == 'mse':
+        #     if self.current_step != len(self.t_steps) - 2: 
+        rewards = self.reward_scale * ~dones * (action - 1) # + dones * 0.1 * -1. * torch.sum((self.ref - x_next) ** 2, dim=(1, 2, 3))
+        # if step 2 then give 1 reward 
+        #     else:
+                
+        #         rewards = self.reward_scale * -1. * torch.mean((ref - x_next) ** 2, dim=(1, 2, 3))
+        # if self.reward_type == 'joint':
+        #     if self.current_step != len(self.t_steps) - 2: 
+        #         rewards = self.reward_scale * self.get_rewards_norm(d_cur)
+        #     else:
+        #         ref = self.sample_via_sample_fn(20)
+        #         rewards = self.reward_scale_terminal * -1. * torch.mean((ref - x_next) ** 2, dim=(1, 2, 3))
         
         # rewards = torch.linalg.norm(d_mid, dim)
-        dones = self.get_dones()
+        # dones = self.get_dones()
         obs = self.get_observations()[0]
-        self.current_step += 1
+        self.current_step = next_step
 
         return obs, rewards, dones, {"observations": {}}
     
@@ -428,6 +427,15 @@ class DiffSamplingEnv(object):
         img = euler_sampler(self.net, self.latents, self.class_labels, num_steps=num_steps, schedule_type=self.schedule_type,
                         schedule_rho=self.schedule_rho)
         return img
+    
+    def sample_via_heun(self, num_steps):
+        from solvers_amed import heun_sampler
+        # img = euler_sampler(self.net, self.latents, self.class_labels, num_steps=1000, schedule_type='time_uniform',
+        #                 schedule_rho=1.0)
+        print(f"generating using heun {num_steps} steps")
+        img = heun_sampler(self.net, self.latents, self.class_labels, num_steps=num_steps, schedule_type=self.schedule_type,
+                        schedule_rho=self.schedule_rho)
+        return img
 
 
 if __name__ == '__main__':
@@ -445,8 +453,8 @@ if __name__ == '__main__':
     net.sigma_min = 0.002
     net.sigma_max = 80.0
     batch_size = 16
-    num_steps = 25
-    env = DiffSamplingEnv(
+    num_steps = 20
+    env = DiffSamplingEnvStep(
         device=torch.device('cuda:1'),
         batch_seeds=1,
         dataset_name='afhqv2',
@@ -455,16 +463,21 @@ if __name__ == '__main__':
         schedule_type='time_uniform',
         schedule_rho=1.0,
         net=net,
+        reward_scale=0.5
     )
     env.reset() # batch_seeds=torch.randint(low=0, high=1000, size=(batch_size,))
     # img = env.sample_via_sample_fn()
     done = False
     rs = []
     for i in tqdm(range(num_steps - 1)):
-        enc_out, r, done, _ = env.step(torch.zeros((batch_size, 2), device=torch.device('cuda:1')))
+        # print(env.current_step, done)
+        enc_out, r, done, _ = env.step(torch.zeros((batch_size), device=torch.device('cuda:1')).int())
         print(enc_out.shape)
         print(r.cpu().numpy())
         rs.append(r.cpu().numpy())
+        if torch.all(done):
+            break
+        
     print(env.current_step, done)
     rs = np.array(rs).sum(axis=0)
     print(rs)
@@ -472,7 +485,7 @@ if __name__ == '__main__':
     # # img = draw_indices_on_images(img, rs)
     #
     # env.save_images(img)
-    env.save_images()
+    # env.save_images()
 
 
 

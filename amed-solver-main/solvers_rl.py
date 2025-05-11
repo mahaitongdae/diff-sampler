@@ -3,6 +3,7 @@ from solver_utils import *
 from solvers_amed import get_denoised # , get_amed_prediction
 from agents.config import get_args, class_to_dict
 from envs.diff_sampling_env import DiffSamplingEnv
+from envs.diff_sampling_env_step import DiffSamplingEnvStep
 from tqdm import tqdm
 
 def rl_sampler(
@@ -55,7 +56,7 @@ def rl_sampler(
     """
     assert rl_runner is not None
     
-    env = DiffSamplingEnv(net=net,
+    env = DiffSamplingEnvStep(net=net,
                         dataset_name=cfg.dataset_name,
                         device=device,
                         num_steps=num_steps,
@@ -73,8 +74,12 @@ def rl_sampler(
     
     for i in range(cfg.env.num_steps - 1):
         with torch.no_grad():
-            act = policy(enc_out)
+            # act = policy(enc_out)
+            act = torch.randn([enc_out.shape[0], 2], device=device)
         enc_out, r, done, _ = env.step(act)
+        
+        if torch.all(done):
+            break
         
     return env.x
     
